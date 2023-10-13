@@ -70,7 +70,7 @@ struct pt_driver { /* one per driver */
 	struct device_node *node; /* driver node */
 	void *data; /* driver private data */
 	struct ctl_table_header *sysctl_header;
-	struct ctl_table sysctl_table[PT_SYSCTL_ENTRY];
+	struct ctl_table sysctl_table[2];
 };
 
 struct pt_global {
@@ -87,7 +87,7 @@ struct {
 	spinlock_t sl;
 	char sysctl_command[PT_COMMAND_SIZE];
 	char sysctl_node_name[PT_COMMAND_SIZE];
-	struct ctl_table sysctl_table[PT_SYSCTL_ENTRY];
+	struct ctl_table sysctl_table[3];
 	u32 timestamp;
 	u32 size;
 	int enabled;
