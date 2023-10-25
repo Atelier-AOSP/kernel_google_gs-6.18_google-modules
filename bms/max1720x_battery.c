@@ -6935,7 +6935,7 @@ static struct i2c_driver max1720x_i2c_driver = {
 		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		   },
 	.id_table = max1720x_id,
-	.probe_new = max1720x_probe,
+	.probe = max1720x_probe,
 	.remove = max1720x_remove,
 	.shutdown = max1720x_shutdown,
 };
