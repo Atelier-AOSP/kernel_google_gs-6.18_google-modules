@@ -230,7 +230,7 @@ struct bcl_zone {
 	int bcl_prev_lvl;
 	int bcl_cur_lvl;
 	int bcl_lvl;
-	u16 bcl_pin;
+	struct gpio_desc *bcl_pin;
 	int bcl_irq;
 	int irq_type;
 	int polarity;
@@ -362,10 +362,10 @@ struct bcl_device {
 	unsigned int irq_delay;
 	unsigned int last_current;
 
-	unsigned int vdroop1_pin;
-	unsigned int vdroop2_pin;
-	unsigned int modem_gpio1_pin;
-	unsigned int modem_gpio2_pin;
+	struct gpio_desc *vdroop1_pin;
+	struct gpio_desc *vdroop2_pin;
+	struct gpio_desc *modem_gpio1_pin;
+	struct gpio_desc *modem_gpio2_pin;
 	unsigned int rffe_channel;
 
 	/* debug */
