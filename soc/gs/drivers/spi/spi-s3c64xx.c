@@ -1260,7 +1260,7 @@ static int s3c64xx_spi_setup(struct spi_device *spi)
 	}
 
 	if (IS_ERR(cs)) {
-		dev_err(&spi->dev, "No CS for SPI(%d)\n", spi->chip_select);
+		dev_err(&spi->dev, "No CS for SPI(%d)\n", spi_get_chipselect(spi, 0));
 		return -ENODEV;
 	}
 
