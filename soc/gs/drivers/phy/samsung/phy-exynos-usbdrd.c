@@ -35,7 +35,7 @@
 #include <linux/exynos_otp.h>
 #endif
 #ifdef CONFIG_OF
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/of_gpio.h>
 #endif
 
