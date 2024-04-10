@@ -864,6 +864,7 @@ static bool generate_em_cluster(struct pixel_em_cluster *dst, struct em_perf_dom
 
 	rcu_read_lock();
 	table = em_perf_state_from_pd(pd);
+
 	max_freq = table[max_freq_index].frequency;
 	for (opp_id = 0; opp_id < pd->nr_perf_states; opp_id++) {
 		dst->opps[opp_id].freq = table[opp_id].frequency;
@@ -872,6 +873,7 @@ static bool generate_em_cluster(struct pixel_em_cluster *dst, struct em_perf_dom
 		dst->opps[opp_id].cost = table[opp_id].power / dst->opps[opp_id].capacity;
 		update_inefficient_prev_opp(dst->opps, opp_id);
 	}
+
 	rcu_read_unlock();
 
 	return true;
