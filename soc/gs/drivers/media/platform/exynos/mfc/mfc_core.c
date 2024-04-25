@@ -580,6 +580,7 @@ static int __mfc_core_sysevent_desc_init(struct platform_device *pdev, struct mf
 /* MFC probe function */
 static int mfc_core_probe(struct platform_device *pdev)
 {
+	struct iommu_domain *domain;
 	struct mfc_core *core;
 	struct mfc_dev *dev;
 	int ret = -ENOENT;
@@ -703,13 +704,10 @@ static int mfc_core_probe(struct platform_device *pdev)
 				core->core_pdata->encoder_qos_table[i].name,
 				core->core_pdata->encoder_qos_table[i].bts_scen_idx);
 
-	ret = iommu_register_device_fault_handler(core->device,
-			mfc_core_sysmmu_fault_handler, core);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to register sysmmu fault handler %d\n", ret);
-		ret = -EPROBE_DEFER;
-		goto err_sysmmu_fault_handler;
-	}
+	domain = iommu_get_domain_for_dev(&pdev->dev);
+	if (domain)
+		iommu_set_fault_handler(domain, mfc_core_sysmmu_fault_handler,
+					core);
 
 #if IS_ENABLED(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION)
 	/* allocate Secure-DVA region */
@@ -774,8 +772,6 @@ err_alloc_debug:
 #if IS_ENABLED(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION)
 	mfc_mem_special_buf_free(dev, &core->drm_fw_buf);
 #endif
-	iommu_unregister_device_fault_handler(&pdev->dev);
-err_sysmmu_fault_handler:
 	destroy_workqueue(core->butler_wq);
 err_butler_wq:
 	if (timer_pending(&core->mfc_idle_timer))
@@ -824,7 +820,6 @@ static int mfc_core_remove(struct platform_device *pdev)
 #ifdef CONFIG_MFC_USE_COREDUMP
 	platform_device_unregister(&mfc_core_sscd_dev);
 #endif
-	iommu_unregister_device_fault_handler(&pdev->dev);
 	if (timer_pending(&core->meerkat_timer))
 		del_timer(&core->meerkat_timer);
 	flush_workqueue(core->meerkat_wq);
