@@ -198,11 +198,11 @@ static void usb3_phy_control(struct dwc3_otg *dotg, int owner, int on)
 
 	if (on) {
 		dwc3_core_susphy_set(dwc, 0);
-		exynos_usbdrd_pipe3_enable(dwc->usb3_generic_phy);
+		exynos_usbdrd_pipe3_enable(dwc->usb3_generic_phy[0]);
 		dwc3_core_susphy_set(dwc, 1);
 	} else {
 		dwc3_core_susphy_set(dwc, 0);
-		exynos_usbdrd_pipe3_disable(dwc->usb3_generic_phy);
+		exynos_usbdrd_pipe3_disable(dwc->usb3_generic_phy[0]);
 		dwc3_core_susphy_set(dwc, 1);
 	}
 }
