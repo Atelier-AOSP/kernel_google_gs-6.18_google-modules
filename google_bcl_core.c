@@ -85,7 +85,7 @@ void trace_bcl_zone_stats(struct bcl_zone *zone, int value);
 
 static int zone_read_temp(struct thermal_zone_device *tz, int *val)
 {
-	struct bcl_zone *zone = tz->devdata;
+	struct bcl_zone *zone = thermal_zone_device_priv(tz);
 
 	*val = zone->bcl_cur_lvl;
 	zone->bcl_prev_lvl = *val;
@@ -317,7 +317,7 @@ static int google_bcl_set_soc(struct bcl_device *bcl_dev, int low, int high)
 
 static int tz_bcl_set_soc(struct thermal_zone_device *tz, int low, int high)
 {
-	return google_bcl_set_soc(tz->devdata, low, high);
+	return google_bcl_set_soc(thermal_zone_device_priv(tz), low, high);
 }
 
 static int google_bcl_read_soc(struct bcl_device *bcl_dev, int *val)
@@ -351,7 +351,7 @@ static int google_bcl_read_soc(struct bcl_device *bcl_dev, int *val)
 
 static int tz_bcl_read_soc(struct thermal_zone_device *tz, int *val)
 {
-	return google_bcl_read_soc(tz->devdata, val);
+	return google_bcl_read_soc(thermal_zone_device_priv(tz), val);
 }
 
 static void google_bcl_evaluate_soc(struct work_struct *work)
