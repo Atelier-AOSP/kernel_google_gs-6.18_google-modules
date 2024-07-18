@@ -18,6 +18,7 @@
 #include <linux/power_supply.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <thermal_core.h>
 #include "bcl.h"
 #include <linux/regulator/pmic_class.h>
 #if IS_ENABLED(CONFIG_REGULATOR_S2MPG14)
@@ -1071,7 +1072,7 @@ static ssize_t uvlo1_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[UVLO1]->bcl_lvl = VD_BATTERY_VOLTAGE - value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[UVLO1]->tz) {
-		bcl_dev->zone[UVLO1]->tz->trips[0].temperature = VD_BATTERY_VOLTAGE - value;
+		bcl_dev->zone[UVLO1]->tz->trips[0].trip.temperature = VD_BATTERY_VOLTAGE - value;
 		thermal_zone_device_update(bcl_dev->zone[UVLO1]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1132,7 +1133,7 @@ static ssize_t uvlo2_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[UVLO2]->bcl_lvl = VD_BATTERY_VOLTAGE - value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[UVLO2]->tz) {
-		bcl_dev->zone[UVLO2]->tz->trips[0].temperature = VD_BATTERY_VOLTAGE - value;
+		bcl_dev->zone[UVLO2]->tz->trips[0].trip.temperature = VD_BATTERY_VOLTAGE - value;
 		thermal_zone_device_update(bcl_dev->zone[UVLO2]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1248,7 +1249,7 @@ static ssize_t batoilo_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[BATOILO1]->bcl_lvl = value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[BATOILO1]->tz) {
-		bcl_dev->zone[BATOILO1]->tz->trips[0].temperature = value;
+		bcl_dev->zone[BATOILO1]->tz->trips[0].trip.temperature = value;
 		thermal_zone_device_update(bcl_dev->zone[BATOILO1]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1304,7 +1305,7 @@ static ssize_t batoilo2_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[BATOILO2]->bcl_lvl = value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[BATOILO2]->tz) {
-		bcl_dev->zone[BATOILO2]->tz->trips[0].temperature = value;
+		bcl_dev->zone[BATOILO2]->tz->trips[0].trip.temperature = value;
 		thermal_zone_device_update(bcl_dev->zone[BATOILO2]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1371,7 +1372,7 @@ static ssize_t smpl_lvl_store(struct device *dev,
 	bcl_dev->zone[SMPL_WARN]->bcl_lvl = SMPL_BATTERY_VOLTAGE - val - THERMAL_HYST_LEVEL;
 
 	if (bcl_dev->zone[SMPL_WARN]->tz) {
-		bcl_dev->zone[SMPL_WARN]->tz->trips[0].temperature = SMPL_BATTERY_VOLTAGE - val;
+		bcl_dev->zone[SMPL_WARN]->tz->trips[0].trip.temperature = SMPL_BATTERY_VOLTAGE - val;
 		thermal_zone_device_update(bcl_dev->zone[SMPL_WARN]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	enable_irq(bcl_dev->zone[SMPL_WARN]->bcl_irq);
@@ -1426,7 +1427,7 @@ static int set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 addr, u8 pmic, u8
 	if (!ret)
 		bcl_dev->zone[id]->bcl_lvl = val - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[id]->tz) {
-		bcl_dev->zone[id]->tz->trips[0].temperature = val;
+		bcl_dev->zone[id]->tz->trips[0].trip.temperature = val;
 		thermal_zone_device_update(bcl_dev->zone[id]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	enable_irq(bcl_dev->zone[id]->bcl_irq);

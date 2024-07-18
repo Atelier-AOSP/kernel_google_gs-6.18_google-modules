@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 subdir-ccflags-y += \
-		-I$(KERNEL_SRC)/../private/google-modules/bms
+		-I$(KERNEL_SRC)/../private/google-modules/bms \
+		-I$(KERNEL_SRC)/drivers/thermal
 
 ifneq ($(filter m, $(CONFIG_SOC_ZUMAPRO)),)
 # Only one of them exists at build time, depending on :radio flag.
