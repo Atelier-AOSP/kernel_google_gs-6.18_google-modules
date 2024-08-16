@@ -1797,8 +1797,6 @@ static int odpm_remove(struct platform_device *pdev)
 
 	if (info->ws)
 		wakeup_source_unregister(info->ws);
-
-	return ret;
 }
 
 static void odpm_probe_init_device_specific(struct odpm_info *info, int id)
