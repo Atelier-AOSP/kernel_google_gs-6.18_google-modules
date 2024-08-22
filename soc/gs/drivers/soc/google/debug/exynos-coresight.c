@@ -507,8 +507,6 @@ static const struct of_device_id of_exynos_cs_matches[] __initconst= {
 static int exynos_cs_parsing_dt(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
-	struct property *prop;
-	const __be32 *cur;
 	u32 val, i = 0;
 	int ret;
 
