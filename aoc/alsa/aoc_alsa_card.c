@@ -1977,7 +1977,7 @@ err:
 	return ret;
 }
 
-static int aoc_snd_card_remove(struct platform_device *pdev)
+static void aoc_snd_card_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 
@@ -1990,8 +1990,6 @@ static int aoc_snd_card_remove(struct platform_device *pdev)
 		if (g_chip)
 			wakeup_source_unregister(g_chip->wakelock);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id aoc_snd_of_match[] = {
