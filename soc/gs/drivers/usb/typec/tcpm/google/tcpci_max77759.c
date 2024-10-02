@@ -871,13 +871,13 @@ static void max77759_init_regs(struct max77759_plat *chip, bool setup)
 		return;
 	}
 
-	alert_mask = TCPC_ALERT_TX_SUCCESS | TCPC_ALERT_TX_DISCARDED |
-		TCPC_ALERT_TX_FAILED | TCPC_ALERT_RX_HARD_RST |
-		TCPC_ALERT_RX_STATUS | TCPC_ALERT_VENDOR | TCPC_ALERT_CC_STATUS |
-		TCPC_ALERT_VBUS_DISCNCT | TCPC_ALERT_RX_BUF_OVF |
-		TCPC_ALERT_EXTENDED_STATUS | TCPC_ALERT_POWER_STATUS |
-		/* Enable Extended alert for detecting Fast Role Swap Signal */
-		TCPC_ALERT_EXTND;
+	alert_mask = (TCPC_ALERT_TX_SUCCESS | TCPC_ALERT_TX_DISCARDED |
+		      TCPC_ALERT_TX_FAILED | TCPC_ALERT_RX_HARD_RST |
+		      TCPC_ALERT_RX_STATUS | TCPC_ALERT_POWER_STATUS |
+		      TCPC_ALERT_CC_STATUS |
+		      TCPC_ALERT_EXTND | TCPC_ALERT_EXTENDED_STATUS |
+		      TCPC_ALERT_VBUS_DISCNCT | TCPC_ALERT_RX_BUF_OVF |
+		      TCPC_ALERT_VENDOR);
 
 	mutex_lock(&chip->vbus_alarm_lock);
 	if (chip->alarm_enabled)
