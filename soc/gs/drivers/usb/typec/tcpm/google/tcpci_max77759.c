@@ -5,6 +5,7 @@
  * MAX77759 TCPCI driver
  */
 
+#include <linux/bitfield.h>
 #include <linux/debugfs.h>
 #include <linux/extcon.h>
 #include <linux/extcon-provider.h>

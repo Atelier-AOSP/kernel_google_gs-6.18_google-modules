@@ -5,6 +5,7 @@
  * USB contaminant detection
  */
 
+#include <linux/bitfield.h>
 #include <linux/device.h>
 #include <linux/irqreturn.h>
 #include <linux/module.h>
@@ -397,9 +398,10 @@ int max77759_disable_contaminant_detection(struct max77759_plat *chip)
 	if (ret < 0)
 		return -EIO;
 
-	ret = max77759_write8(regmap, TCPC_ROLE_CTRL, TCPC_ROLE_CTRL_DRP |
-			      (TCPC_ROLE_CTRL_CC_RD << TCPC_ROLE_CTRL_CC1_SHIFT) |
-			      (TCPC_ROLE_CTRL_CC_RD << TCPC_ROLE_CTRL_CC2_SHIFT));
+	ret = max77759_write8(regmap, TCPC_ROLE_CTRL,
+			      TCPC_ROLE_CTRL_DRP
+			      | FIELD_PREP(TCPC_ROLE_CTRL_CC1, TCPC_ROLE_CTRL_CC_RD)
+			      | FIELD_PREP(TCPC_ROLE_CTRL_CC2, TCPC_ROLE_CTRL_CC_RD));
 	if (ret < 0)
 		return -EIO;
 
@@ -494,11 +496,10 @@ int max77759_enable_contaminant_detection(struct max77759_plat *chip)
 		}
 	}
 
-	ret = max77759_write8(regmap, TCPC_ROLE_CTRL, TCPC_ROLE_CTRL_DRP |
-			      (TCPC_ROLE_CTRL_CC_RD <<
-			       TCPC_ROLE_CTRL_CC1_SHIFT) |
-			      (TCPC_ROLE_CTRL_CC_RD <<
-			       TCPC_ROLE_CTRL_CC2_SHIFT));
+	ret = max77759_write8(regmap, TCPC_ROLE_CTRL,
+			      TCPC_ROLE_CTRL_DRP
+			      | FIELD_PREP(TCPC_ROLE_CTRL_CC1, TCPC_ROLE_CTRL_CC_RD)
+			      | FIELD_PREP(TCPC_ROLE_CTRL_CC2, TCPC_ROLE_CTRL_CC_RD));
 	if (ret < 0) {
 		logbuffer_log(chip->log, "[%s]: Enabling DRP failed ret:%d", __func__,
 			      ret);
