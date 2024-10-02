@@ -68,8 +68,8 @@ static int read_adc_mv(struct max777x9_contaminant *contaminant,
 	int ret;
 
 	/* Channel & scale select */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL_MASK,
-				    channel << ADC_CHANNEL_OFFSET);
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL,
+				    FIELD_PREP(ADCINSEL, channel));
 	if (ret < 0)
 		return -EIO;
 
@@ -91,7 +91,8 @@ static int read_adc_mv(struct max777x9_contaminant *contaminant,
 	if (ret < 0)
 		return -EIO;
 
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL_MASK, 0);
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL,
+				    FIELD_PREP(ADCINSEL, 0));
 	if (ret < 0)
 		return -EIO;
 
