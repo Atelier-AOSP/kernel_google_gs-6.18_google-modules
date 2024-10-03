@@ -6863,6 +6863,8 @@ static void max1720x_remove(struct i2c_client *client)
 		i2c_unregister_device(chip->secondary);
 
 	maxfg_free_capture_buf(&chip->cb_lh);
+
+	of_node_put(chip->batt_node);
 }
 
 static const struct of_device_id max1720x_of_match[] = {
