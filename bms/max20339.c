@@ -394,6 +394,7 @@ static int max20339_probe(struct i2c_client *client)
 {
 	struct max20339_ovp *ovp;
 	int rc, ret = 0;
+	struct device_node *dp;
 
 	ovp = devm_kzalloc(&client->dev, sizeof(*ovp), GFP_KERNEL);
 	if (!ovp)
@@ -421,11 +422,11 @@ static int max20339_probe(struct i2c_client *client)
 	ovp->gpio.base = -1;
 	ovp->gpio.ngpio = MAX20339_NUM_GPIOS;
 	ovp->gpio.can_sleep = true;
-	ovp->gpio.of_node = of_find_node_by_name(client->dev.of_node,
-						 ovp->gpio.label);
-	if (!ovp->gpio.of_node)
+	dp = of_find_node_by_name(client->dev.of_node, ovp->gpio.label);
+	if (!dp)
 		dev_err(&client->dev, "Failed to find %s DT node\n",
 			ovp->gpio.label);
+	ovp->gpio.fwnode = of_node_to_fwnode(dp);
 
 	ret = devm_gpiochip_add_data(&client->dev, &ovp->gpio, ovp);
 	if (ret)
