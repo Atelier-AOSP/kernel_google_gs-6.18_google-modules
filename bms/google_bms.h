@@ -608,7 +608,7 @@ int gbms_aact_get_index(const struct gbms_chg_profile *profile, const int cycles
 int gbms_read_chg_aact_ecc(struct gbms_chg_profile *profile, struct device_node *node);
 
 void gbms_init_chg_table(struct gbms_chg_profile *profile,
-			 struct device_node *node, u32 capacity);
+			 const struct device_node *node, u32 capacity);
 
 void gbms_free_chg_profile(struct gbms_chg_profile *profile);
 
@@ -757,7 +757,7 @@ int ttf_soc_cstr_combine(char *buff, int size, const struct ttf_soc_stats *soc_r
 			 const struct ttf_soc_stats *soc_stats);
 
 int gbms_read_aacr_limits(struct gbms_chg_profile *profile,
-			  struct device_node *node);
+			  const struct device_node *node);
 
 int gbms_read_aafv_limits(struct gbms_chg_profile *profile,
 			  struct device_node *node);
