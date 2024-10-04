@@ -2515,7 +2515,7 @@ static int aoc_platform_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct aoc_prvdata *prvdata = NULL;
-	struct device_node *aoc_node, *mem_node, *iommu_node;
+	struct device_node *aoc_node, *mem_node = NULL, *iommu_node;
 	struct resource *rsrc;
 	int ret;
 	int rc;
@@ -2586,6 +2586,7 @@ static int aoc_platform_probe(struct platform_device *pdev)
 
 	ret = of_address_to_resource(mem_node, 0, &prvdata->dram_resource);
 	of_node_put(mem_node);
+	mem_node = NULL;
 
 	if (!aoc_sram_resource || ret != 0) {
 		dev_err(dev,
@@ -2632,9 +2633,9 @@ static int aoc_platform_probe(struct platform_device *pdev)
 		goto err_watchdog_iommu_irq;
 	}
 	ret = configure_iommu_interrupts(dev, iommu_node, prvdata);
+	of_node_put(iommu_node);
 	if (ret < 0)
 		goto err_watchdog_iommu_irq;
-	of_node_put(iommu_node);
 
 	pr_notice("found aoc with interrupt:%d sram:%pR dram:%pR\n", aoc_irq,
 		  aoc_sram_resource, &prvdata->dram_resource);
@@ -2761,6 +2762,7 @@ err_memnode:
 	deinit_chardev(prvdata);
 err_chardev:
 err_failed_prvdata_alloc:
+	of_node_put(mem_node);
 err_invalid_dt:
 	aoc_platform_device = NULL;
 err_platform_not_null:
