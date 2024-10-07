@@ -1249,7 +1249,6 @@ static int get_idx_from_zone(struct bcl_device *bcl_dev, const char *name)
 static void google_bcl_parse_qos(struct bcl_device *bcl_dev)
 {
 	struct device_node *np = bcl_dev->device->of_node;
-	struct device_node *child;
 	struct device_node *p_np __free(device_node);
 	int idx;
 
@@ -1257,7 +1256,7 @@ static void google_bcl_parse_qos(struct bcl_device *bcl_dev)
 	p_np = of_get_child_by_name(np, "freq_qos");
 	if (!p_np)
 		return;
-	for_each_child_of_node(p_np, child) {
+	for_each_child_of_node_scoped(p_np, child) {
 		idx = get_idx_from_zone(bcl_dev, child->name);
 		if (idx < 0)
 			continue;
@@ -2281,7 +2280,6 @@ static void google_bcl_parse_dtree(struct bcl_device *bcl_dev)
 {
 	int ret, len, i;
 	int read;
-	struct device_node *child;
 	struct device_node *p_np;
 	struct device_node *np;
 
@@ -2295,7 +2293,7 @@ static void google_bcl_parse_dtree(struct bcl_device *bcl_dev)
 	p_np = of_get_child_by_name(np, "main_mitigation");
 	if (p_np) {
 		i = 0;
-		for_each_child_of_node(p_np, child) {
+		for_each_child_of_node_scoped(p_np, child) {
 			if (i < METER_CHANNEL_MAX) {
 				of_property_read_u32(child, "module_id", &read);
 				bcl_dev->main_mitigation_conf[i].module_id = read;
@@ -2312,7 +2310,7 @@ static void google_bcl_parse_dtree(struct bcl_device *bcl_dev)
 	p_np = of_get_child_by_name(np, "sub_mitigation");
 	if (p_np) {
 		i = 0;
-		for_each_child_of_node(p_np, child) {
+		for_each_child_of_node_scoped(p_np, child) {
 			if (i < METER_CHANNEL_MAX) {
 				of_property_read_u32(child, "module_id", &read);
 				bcl_dev->sub_mitigation_conf[i].module_id = read;
