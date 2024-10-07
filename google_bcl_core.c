@@ -1121,13 +1121,13 @@ static int google_set_sub_pmic(struct bcl_device *bcl_dev)
 	p_np = of_parse_phandle(np, "google,sub-power", 0);
 	if (p_np) {
 		i2c = of_find_i2c_device_by_node(p_np);
+		of_node_put(p_np);
 		if (!i2c) {
 			dev_err(bcl_dev->device, "Cannot find sub-power I2C\n");
 			return -ENODEV;
 		}
 		sub_dev = i2c_get_clientdata(i2c);
 	}
-	of_node_put(p_np);
 	if (!sub_dev) {
 		dev_err(bcl_dev->device, "SUB PMIC device not found\n");
 		return -ENODEV;
@@ -1801,13 +1801,13 @@ static int google_set_main_pmic(struct bcl_device *bcl_dev)
 	p_np = of_parse_phandle(np, "google,main-power", 0);
 	if (p_np) {
 		i2c = of_find_i2c_device_by_node(p_np);
+		of_node_put(p_np);
 		if (!i2c) {
 			dev_err(bcl_dev->device, "Cannot find main-power I2C\n");
 			return -ENODEV;
 		}
 		main_dev = i2c_get_clientdata(i2c);
 	}
-	of_node_put(p_np);
 	if (!main_dev) {
 		dev_err(bcl_dev->device, "Main PMIC device not found\n");
 		return -ENODEV;
