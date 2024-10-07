@@ -9,6 +9,7 @@
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/atomic.h>
+#include <linux/cleanup.h>
 #include <linux/completion.h>
 #include <linux/cpu.h>
 #include <linux/cpu_pm.h>
@@ -482,7 +483,7 @@ static int google_bcl_init_clk_div(struct bcl_device *bcl_dev, int idx,
 
 struct bcl_device *google_retrieve_bcl_handle(void)
 {
-	struct device_node *np;
+	struct device_node *np __free(device_node);
 	struct platform_device *pdev;
 	struct bcl_device *bcl_dev;
 
