@@ -1250,7 +1250,7 @@ static void google_bcl_parse_qos(struct bcl_device *bcl_dev)
 {
 	struct device_node *np = bcl_dev->device->of_node;
 	struct device_node *child;
-	struct device_node *p_np;
+	struct device_node *p_np __free(device_node);
 	int idx;
 
 	/* parse qos */
@@ -2179,7 +2179,8 @@ static void irq_config(struct bcl_zone *zone, bool enabled)
 static void google_bcl_parse_irq_config(struct bcl_device *bcl_dev)
 {
 	struct device_node *np = bcl_dev->device->of_node;
-	struct device_node *child;
+	struct device_node *child __free(device_node);
+
         /* irq config */
 	child = of_get_child_by_name(np, "irq_config");
 	if (!child)
@@ -2304,6 +2305,7 @@ static void google_bcl_parse_dtree(struct bcl_device *bcl_dev)
 				i++;
 			}
 		}
+		of_node_put(p_np);
 	}
 
 	/* parse ODPM sub mitigation module */
@@ -2320,6 +2322,7 @@ static void google_bcl_parse_dtree(struct bcl_device *bcl_dev)
 				i++;
 			}
 		}
+		of_node_put(p_np);
 	}
 
 	/* parse and init non-monitored modules */
