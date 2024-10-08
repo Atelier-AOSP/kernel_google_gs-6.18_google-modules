@@ -111,6 +111,8 @@ static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 	dss_dpm.enabled_debug = false;
 	dss_dpm.dump_mode = NONE_DUMP;
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(node);
 	item = of_find_node_by_name(node, "dump-mode");
 	if (!item) {
 		pr_info("dpm: No such ramdump node, [dump-mode] disabled\n");
@@ -138,12 +140,16 @@ static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 			val ? "en" : "dis");
 	}
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(node);
 	item = of_find_node_by_name(node, "event");
 	if (!item) {
 		pr_warn("dpm: No such methods of kernel event\n");
 		goto exit_dss;
 	}
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(node);
 	item = of_find_node_by_name(node, "debug-kinfo");
 	if (!item) {
 		pr_info("dpm: No such debug-kinfo node, [debug-kinfo] disabled\n");
@@ -166,6 +172,8 @@ static void dbg_snapshot_dt_scan_dpm_policy(struct device_node *node)
 	struct device_node *item;
 	unsigned int val;
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(node);
 	item = of_find_node_by_name(node, "exception");
 	if (!item) {
 		pr_info("dpm: No such exception node, nothing to [policy]\n");
@@ -248,6 +256,8 @@ int dbg_snapshot_dt_scan_dpm(void)
 	}
 
 	/* feature setting */
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(root);
 	next = of_find_node_by_name(root, DPM_F);
 	if (!next) {
 		pr_warn("dpm: No such features of debug policy\n");

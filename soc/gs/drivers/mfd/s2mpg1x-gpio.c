@@ -487,6 +487,8 @@ static int s2mpg1x_gpio_probe(struct platform_device *pdev)
 	s2mpg1x_gpio->pctrl.owner = THIS_MODULE;
 	s2mpg1x_gpio->pctrl.name = dev_name(&pdev->dev);
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(pdev->dev.parent->of_node);
 	pdev->dev.of_node = of_find_node_by_name(pdev->dev.parent->of_node,
 						 pinctrl_of_name);
 	if (!pdev->dev.of_node) {
