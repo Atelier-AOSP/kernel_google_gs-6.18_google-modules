@@ -1293,7 +1293,7 @@ fail:
 static int exynos_cpupm_mode_init(struct platform_device *pdev)
 {
 	int cluster_id = 0;
-	struct device_node *dn = of_node_get(pdev->dev.of_node);
+	struct device_node *dn __free(device_node) = of_node_get(pdev->dev.of_node);
 
 	cpupm = alloc_percpu(struct exynos_cpupm);
 
