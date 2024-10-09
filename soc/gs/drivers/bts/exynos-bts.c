@@ -1994,7 +1994,7 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		for (j = 0; j < data->num_scen; j++)
 			info[i].stat[j].stat_on = 0;
 
-		for_each_child_of_node(child_np, snp) {
+		for_each_child_of_node_scoped(child_np, snp) {
 			for (j = 0; j < data->num_scen; j++) {
 				if (strcmp(snp->name, scen[j].name))
 					continue;

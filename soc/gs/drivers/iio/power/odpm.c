@@ -527,7 +527,6 @@ static int odpm_parse_dt_rail(struct odpm_rail_data *rail_data,
 static int odpm_parse_dt_rails(struct device *dev, struct odpm_info *info,
 			       struct device_node *pmic_np)
 {
-	struct device_node *iter_np;
 	struct device_node *rails_np __free(device_node);
 	struct device_node *regulators_np __free(device_node) = NULL;
 	bool use_regulators_as_rails = false;
@@ -574,7 +573,7 @@ static int odpm_parse_dt_rails(struct device *dev, struct odpm_info *info,
 
 	/* Populate rail data */
 	if (use_regulators_as_rails) {
-		for_each_child_of_node(regulators_np, iter_np) {
+		for_each_child_of_node_scoped(regulators_np, iter_np) {
 			int ret =
 				odpm_parse_dt_rail(&rail_data[rail_i], iter_np);
 			if (ret != 0)
@@ -582,7 +581,7 @@ static int odpm_parse_dt_rails(struct device *dev, struct odpm_info *info,
 			rail_i++;
 		}
 	}
-	for_each_child_of_node(rails_np, iter_np) {
+	for_each_child_of_node_scoped(rails_np, iter_np) {
 		int ret = odpm_parse_dt_rail(&rail_data[rail_i], iter_np);
 
 		if (ret != 0)
@@ -604,7 +603,6 @@ static int odpm_parse_dt_channels(struct odpm_info *info,
 {
 	int rail_i = 0, channel_i = 0;
 	int num_channels = of_get_child_count(channels_np);
-	struct device_node *iter_np;
 
 	/* Check channel count */
 	if (num_channels != ODPM_CHANNEL_MAX) {
@@ -614,7 +612,7 @@ static int odpm_parse_dt_channels(struct odpm_info *info,
 	}
 
 	/* Parse channels */
-	for_each_child_of_node(channels_np, iter_np) {
+	for_each_child_of_node_scoped(channels_np, iter_np) {
 		const char *rail_name;
 
 		/* Explicitly set enabled to false until we find the

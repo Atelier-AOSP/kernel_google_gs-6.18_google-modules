@@ -1020,7 +1020,6 @@ static int exynos_usbdrd_fill_hstune_param(struct exynos_usbdrd_phy *phy_drd,
 					   struct device_node *node)
 {
 	struct device *dev = phy_drd->dev;
-	struct device_node *child = NULL;
 	struct exynos_usb_tune_param *hs_tune_param;
 	size_t size = sizeof(struct exynos_usb_tune_param);
 	int ret;
@@ -1040,7 +1039,7 @@ static int exynos_usbdrd_fill_hstune_param(struct exynos_usbdrd_phy *phy_drd,
 		return -ENOMEM;
 	phy_drd->usbphy_info.tune_param = hs_tune_param;
 
-	for_each_child_of_node(node, child) {
+	for_each_child_of_node_scoped(node, child) {
 		ret = of_property_read_string(child, "tune_name", &name);
 		if (ret == 0) {
 			memcpy(hs_tune_param[param_index].name, name, strlen(name));
@@ -1072,7 +1071,6 @@ static int exynos_usbdrd_fill_sstune_param(struct exynos_usbdrd_phy *phy_drd,
 					   struct device_node *node)
 {
 	struct device *dev = phy_drd->dev;
-	struct device_node *child = NULL;
 	struct exynos_usb_tune_param *ss_tune_param;
 	size_t size = sizeof(struct exynos_usb_tune_param);
 	int ret;
@@ -1089,7 +1087,7 @@ static int exynos_usbdrd_fill_sstune_param(struct exynos_usbdrd_phy *phy_drd,
 		return -ENOMEM;
 	phy_drd->usbphy_sub_info.tune_param = ss_tune_param;
 
-	for_each_child_of_node(node, child) {
+	for_each_child_of_node_scoped(node, child) {
 		ret = of_property_read_string(child, "tune_name", &name);
 		if (ret == 0) {
 			memcpy(ss_tune_param[idx].name, name, strlen(name));
