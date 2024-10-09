@@ -3,6 +3,7 @@
  * Copyright (c) 2020 Samsung Electronics Co., Ltd.
  */
 
+#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/suspend.h>
 #include <linux/wakeup_reason.h>
