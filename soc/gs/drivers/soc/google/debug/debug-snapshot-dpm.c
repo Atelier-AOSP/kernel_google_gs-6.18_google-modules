@@ -4,6 +4,7 @@
  *		http://www.samsung.com
  */
 
+#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/version.h>
 #include <linux/io.h>
@@ -105,7 +106,7 @@ EXPORT_SYMBOL_GPL(dbg_snapshot_do_dpm);
 
 static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 {
-	struct device_node *item;
+	struct device_node *item __free(device_node);
 	unsigned int val;
 
 	dss_dpm.enabled_debug = false;
@@ -139,6 +140,7 @@ static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 		pr_info("dpm: file-support of dump-mode is %sabled\n",
 			val ? "en" : "dis");
 	}
+	of_node_put(item);
 
 	/* balance of_node_put() in of_find_node_by_name() */
 	of_node_get(node);
@@ -147,6 +149,8 @@ static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 		pr_warn("dpm: No such methods of kernel event\n");
 		goto exit_dss;
 	}
+
+	of_node_put(item);
 
 	/* balance of_node_put() in of_find_node_by_name() */
 	of_node_get(node);
@@ -169,7 +173,7 @@ exit_dss:
 
 static void dbg_snapshot_dt_scan_dpm_policy(struct device_node *node)
 {
-	struct device_node *item;
+	struct device_node *item __free(device_node);
 	unsigned int val;
 
 	/* balance of_node_put() in of_find_node_by_name() */
@@ -264,15 +268,21 @@ int dbg_snapshot_dt_scan_dpm(void)
 	} else {
 		pr_warn("dpm: found features of debug policy\n");
 		dbg_snapshot_dt_scan_dpm_feature(next);
+		of_node_put(next);
 	}
 
 	/* policy setting */
+	/*
+	 * root will be released due to of_node_put() in
+	 * of_find_node_by_name()
+	 */
 	next = of_find_node_by_name(root, DPM_P);
 	if (!next) {
 		pr_warn("dpm: No such policy of debug policy\n");
 	} else {
 		pr_warn("dpm: found policy of debug policy\n");
 		dbg_snapshot_dt_scan_dpm_policy(next);
+		of_node_put(next);
 	}
 
 	return 0;
