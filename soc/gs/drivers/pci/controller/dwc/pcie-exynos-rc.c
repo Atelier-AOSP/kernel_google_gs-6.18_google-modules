@@ -5457,7 +5457,7 @@ EXPORT_SYMBOL_GPL(exynos_pcie_set_msi_ctrl_addr);
 #if IS_ENABLED(CONFIG_GS_S2MPU)
 static int setup_s2mpu_mem(struct device *dev, struct exynos_pcie *exynos_pcie)
 {
-	struct device_node *np;
+	struct device_node *np __free(device_node);
 	struct resource res;
 	struct phys_mem *pm;
 	phys_addr_t addr;
