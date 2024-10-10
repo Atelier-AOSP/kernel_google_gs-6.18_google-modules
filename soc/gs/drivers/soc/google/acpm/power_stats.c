@@ -7,6 +7,7 @@
  * Author: bsschwar@google.com
  */
 
+#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -541,7 +542,7 @@ static int init_stat_node(struct platform_device *pdev, const char *buffer_name,
 
 static int init_pd_stat_node(struct power_stats_device *ps_dev)
 {
-	struct device_node *np;
+	struct device_node *np __free(device_node);
 	struct platform_device *pdev;
 	struct exynos_pm_domain *pd;
 	struct pd_entry *new_pd_entry;
