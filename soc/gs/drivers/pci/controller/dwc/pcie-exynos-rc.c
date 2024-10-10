@@ -5670,6 +5670,7 @@ static int exynos_pcie_rc_probe(struct platform_device *pdev)
 		fake_dma_dev.dma_ops = NULL;
 
 		exynos_pcie->s2mpu = s2mpu_fwnode_to_info(&s2mpu_dn->fwnode);
+		of_node_put(s2mpu_dn);
 		if (!exynos_pcie->s2mpu) {
 			dev_err(&pdev->dev, "Failed to get S2MPU\n");
 			return -EPROBE_DEFER;
