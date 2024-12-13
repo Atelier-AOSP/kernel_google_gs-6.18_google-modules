@@ -81,15 +81,6 @@ void pwrwarn_update_end_time(struct bcl_device *bcl_dev, int id,
 				enum CONCURRENT_PWRWARN_IRQ bin_ind);
 void trace_bcl_zone_stats(struct bcl_zone *zone, int value);
 
-static int zone_read_temp(struct thermal_zone_device *tz, int *val)
-{
-	struct bcl_zone *zone = thermal_zone_device_priv(tz);
-
-	*val = zone->bcl_cur_lvl;
-	zone->bcl_prev_lvl = *val;
-	return 0;
-}
-
 static struct power_supply *google_get_power_supply(struct bcl_device *bcl_dev, const char *str)
 {
 	static struct power_supply *psy[2];
@@ -714,7 +705,7 @@ static irqreturn_t vdroop_irq_thread_fn(int irq, void *data)
 }
 
 static int google_bcl_register_zone(struct bcl_device *bcl_dev, int idx, const char *devname,
-				    struct gpio_desc *pin, int lvl, int irq, int type, bool register_thermal)
+				    struct gpio_desc *pin, int lvl, int irq, int type)
 {
 	int ret = 0;
 	struct bcl_zone *zone;
@@ -788,17 +779,6 @@ static int google_bcl_register_zone(struct bcl_device *bcl_dev, int idx, const c
 		}
 		zone->irq_reg = true;
 	}
-	if (!register_thermal)
-		goto register_done;
-	zone->tz_ops.get_temp = zone_read_temp;
-	zone->tz = devm_thermal_of_zone_register(bcl_dev->device, idx, zone, &zone->tz_ops);
-	if (IS_ERR(zone->tz))
-		dev_err(zone->device, "TZ register failed. %d, err:%ld\n", idx, PTR_ERR(zone->tz));
-	else {
-		thermal_zone_device_enable(zone->tz);
-		thermal_zone_device_update(zone->tz, THERMAL_DEVICE_UP);
-	}
-register_done:
 	bcl_dev->zone[idx] = zone;
 	return ret;
 }
@@ -1066,14 +1046,13 @@ static int google_bcl_register_zones_sub(struct bcl_device *bcl_dev, void *pdata
 #elif IS_ENABLED(CONFIG_REGULATOR_S2MPG10)
 	struct s2mpg11_platform_data *pdata = pdata_sub;
 #endif
-	const bool register_thermal = false;
 
 	ret = google_bcl_register_zone(bcl_dev, OCP_WARN_GPU, "ocp_gpu",
 				       pdata->b2_ocp_warn_pin,
 				       GPU_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (pdata->b2_ocp_warn_lvl * GPU_STEP),
 				       gpiod_to_irq(pdata->b2_ocp_warn_pin),
-				       CORE_SUB_PMIC, register_thermal);
+				       CORE_SUB_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: GPU\n");
 		return -ENODEV;
@@ -1085,7 +1064,7 @@ static int google_bcl_register_zones_sub(struct bcl_device *bcl_dev, void *pdata
 				       GPU_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (pdata->b2_soft_ocp_warn_lvl * GPU_STEP),
 				       gpiod_to_irq(pdata->b2_soft_ocp_warn_pin),
-				       CORE_SUB_PMIC, register_thermal);
+				       CORE_SUB_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SOFT_GPU\n");
 		return -ENODEV;
@@ -1247,21 +1226,21 @@ static int intf_pmic_init(struct bcl_device *bcl_dev)
 	if (bcl_dev->ifpmic == MAX77759) {
 		ret = google_bcl_register_zone(bcl_dev, UVLO1, "vdroop1", bcl_dev->vdroop1_pin,
 				       	       VD_BATTERY_VOLTAGE - uvlo1_lvl - THERMAL_HYST_LEVEL,
-				       	       gpiod_to_irq(bcl_dev->vdroop1_pin), IF_PMIC, true);
+				       	       gpiod_to_irq(bcl_dev->vdroop1_pin), IF_PMIC);
 		if (ret < 0) {
 			dev_err(bcl_dev->device, "bcl_register fail: UVLO1\n");
 			return -ENODEV;
 		}
 		ret = google_bcl_register_zone(bcl_dev, BATOILO1, "batoilo", bcl_dev->vdroop2_pin,
 				       	       batoilo_lvl - THERMAL_HYST_LEVEL,
-				       	       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC, true);
+				       	       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC);
 		if (ret < 0) {
 			dev_err(bcl_dev->device, "bcl_register fail: BATOILO\n");
 			return -ENODEV;
 		}
 		ret = google_bcl_register_zone(bcl_dev, UVLO2, "vdroop2", bcl_dev->vdroop2_pin,
 				       	       VD_BATTERY_VOLTAGE - uvlo2_lvl - THERMAL_HYST_LEVEL,
-				       	       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC, true);
+				       	       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC);
 		if (ret < 0) {
 			dev_err(bcl_dev->device, "bcl_register fail: UVLO2\n");
 			return -ENODEV;
@@ -1285,21 +1264,21 @@ static int intf_pmic_init(struct bcl_device *bcl_dev)
 	if (bcl_dev->ifpmic == MAX77779) {
 		ret = google_bcl_register_zone(bcl_dev, UVLO1, "vdroop1", bcl_dev->vdroop1_pin,
 				       	       VD_BATTERY_VOLTAGE - uvlo1_lvl - THERMAL_HYST_LEVEL,
-				       	       gpiod_to_irq(bcl_dev->vdroop1_pin), IF_PMIC, true);
+				       	       gpiod_to_irq(bcl_dev->vdroop1_pin), IF_PMIC);
 		if (ret < 0) {
 			dev_err(bcl_dev->device, "bcl_register fail: UVLO1\n");
 			return -ENODEV;
 		}
 		ret = google_bcl_register_zone(bcl_dev, BATOILO1, "batoilo", bcl_dev->vdroop2_pin,
 				       	       batoilo_lvl - THERMAL_HYST_LEVEL,
-				       	       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC, true);
+				       	       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC);
 		if (ret < 0) {
 			dev_err(bcl_dev->device, "bcl_register fail: BATOILO\n");
 			return -ENODEV;
 		}
 		ret = google_bcl_register_zone(bcl_dev, BATOILO2, "batoilo2", bcl_dev->vdroop2_pin,
 					       batoilo2_lvl - THERMAL_HYST_LEVEL,
-					       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC, true);
+					       gpiod_to_irq(bcl_dev->vdroop2_pin), IF_PMIC);
 		if (ret < 0) {
 			dev_err(bcl_dev->device, "bcl_register fail: BATOILO2\n");
 			return -ENODEV;
@@ -1657,8 +1636,6 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 	struct s2mpg10_platform_data *pdata = pdata_main;
 #endif
 
-	const bool register_thermal = false;
-
 	ocp_cpu2_pin = pdata->b2_ocp_warn_pin;
 	ocp_cpu2_lvl = pdata->b2_ocp_warn_lvl;
 	ocp_cpu1_pin = pdata->b3_ocp_warn_pin;
@@ -1683,7 +1660,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 	ret = google_bcl_register_zone(bcl_dev, SMPL_WARN, SMPL_ZONE_NAME,
 				       pdata->smpl_warn_pin, SMPL_BATTERY_VOLTAGE -
 				       (pdata->smpl_warn_lvl * SMPL_STEP + SMPL_LOWER_LIMIT),
-				       gpiod_to_irq(pdata->smpl_warn_pin), CORE_MAIN_PMIC, true);
+				       gpiod_to_irq(pdata->smpl_warn_pin), CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SMPL_WARN\n");
 		return -ENODEV;
@@ -1696,7 +1673,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 				       ocp_cpu1_pin,
 				       CPU1_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (ocp_cpu1_lvl * CPU1_STEP),
-				       gpiod_to_irq(ocp_cpu1_pin), CORE_MAIN_PMIC, register_thermal);
+				       gpiod_to_irq(ocp_cpu1_pin), CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: CPUCL1\n");
 		return -ENODEV;
@@ -1706,7 +1683,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 				       ocp_cpu2_pin,
 				       CPU2_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (ocp_cpu2_lvl * CPU2_STEP),
-				       gpiod_to_irq(ocp_cpu2_pin), CORE_MAIN_PMIC, register_thermal);
+				       gpiod_to_irq(ocp_cpu2_pin), CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: CPUCL2\n");
 		return -ENODEV;
@@ -1716,8 +1693,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 				       ocp_tpu_pin,
 				       TPU_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (ocp_tpu_lvl * TPU_STEP),
-				       gpiod_to_irq(ocp_tpu_pin), CORE_MAIN_PMIC,
-				       register_thermal);
+				       gpiod_to_irq(ocp_tpu_pin), CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: TPU\n");
 		return -ENODEV;
@@ -1728,7 +1704,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 				       CPU1_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (soft_ocp_cpu1_lvl * CPU1_STEP),
 				       gpiod_to_irq(soft_ocp_cpu1_pin),
-				       CORE_MAIN_PMIC, register_thermal);
+				       CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SOFT_CPUCL1\n");
 		return -ENODEV;
@@ -1739,7 +1715,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 				       CPU2_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (soft_ocp_cpu2_lvl * CPU2_STEP),
 				       gpiod_to_irq(soft_ocp_cpu2_pin),
-				       CORE_MAIN_PMIC, register_thermal);
+				       CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SOFT_CPUCL2\n");
 		return -ENODEV;
@@ -1750,7 +1726,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 				       TPU_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (soft_ocp_tpu_lvl * TPU_STEP),
 				       gpiod_to_irq(soft_ocp_tpu_pin),
-				       CORE_MAIN_PMIC, register_thermal);
+				       CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SOFT_TPU\n");
 		return -ENODEV;
@@ -1760,7 +1736,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 					0,
 					PMIC_120C_UPPER_LIMIT - THERMAL_HYST_LEVEL,
 					pdata->irq_base + INT3_120C,
-					CORE_MAIN_PMIC, register_thermal);
+					CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: PMIC_120C\n");
 		return -ENODEV;
@@ -1770,7 +1746,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 					0,
 					PMIC_140C_UPPER_LIMIT - THERMAL_HYST_LEVEL,
 					pdata->irq_base + INT3_140C,
-					CORE_MAIN_PMIC, register_thermal);
+					CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: PMIC_140C\n");
 		return -ENODEV;
@@ -1781,7 +1757,7 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 					0,
 					PMIC_OVERHEAT_UPPER_LIMIT - THERMAL_HYST_LEVEL,
 					pdata->irq_base + INT3_TSD,
-					CORE_MAIN_PMIC, register_thermal);
+					CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: PMIC_OVERHEAT\n");
 		return -ENODEV;
