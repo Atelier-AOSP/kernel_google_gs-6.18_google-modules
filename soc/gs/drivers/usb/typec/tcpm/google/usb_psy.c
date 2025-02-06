@@ -981,12 +981,11 @@ void apply_sdp_enum_failure_wa(void *usb_psy)
 }
 EXPORT_SYMBOL_GPL(apply_sdp_enum_failure_wa);
 
-static enum alarmtimer_restart sdp_timeout_alarm_cb(struct alarm *alarm, ktime_t now)
+static void sdp_timeout_alarm_cb(struct alarm *alarm, ktime_t now)
 {
 	struct usb_psy_data *usb = container_of(alarm, struct usb_psy_data, sdp_timeout_alarm);
 
 	apply_sdp_enum_failure_wa(usb);
-	return ALARMTIMER_NORESTART;
 }
 
 void *usb_psy_setup(struct i2c_client *client, struct logbuffer *log,
