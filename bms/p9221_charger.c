@@ -3514,8 +3514,7 @@ static int p9221_set_dc_icl(struct p9221_charger_data *charger)
 	return ret;
 }
 
-static enum alarmtimer_restart p9221_auth_dc_icl_alarm_cb(struct alarm *alarm,
-							  ktime_t now)
+static void p9221_auth_dc_icl_alarm_cb(struct alarm *alarm, ktime_t now)
 {
 	struct p9221_charger_data *charger =
 			container_of(alarm, struct p9221_charger_data,
@@ -3524,7 +3523,6 @@ static enum alarmtimer_restart p9221_auth_dc_icl_alarm_cb(struct alarm *alarm,
 	/* Alarm is in atomic context, schedule work to complete the task */
 	dev_info(&charger->client->dev, "Auth timeout, reset DC_ICL\n");
 	schedule_delayed_work(&charger->auth_dc_icl_work, msecs_to_jiffies(100));
-	return ALARMTIMER_NORESTART;
 }
 
 /*
@@ -3615,8 +3613,7 @@ bool is_ping_freq_fixed_at(struct p9221_charger_data *charger, u32 khz)
 	return true;
 }
 
-static enum alarmtimer_restart p9221_icl_ramp_alarm_cb(struct alarm *alarm,
-						       ktime_t now)
+static void p9221_icl_ramp_alarm_cb(struct alarm *alarm, ktime_t now)
 {
 	struct p9221_charger_data *charger =
 			container_of(alarm, struct p9221_charger_data,
@@ -3624,7 +3621,7 @@ static enum alarmtimer_restart p9221_icl_ramp_alarm_cb(struct alarm *alarm,
 
 	/* should not schedule icl_ramp_work if charge on rtx phone */
 	if (charger->chg_on_rtx)
-		return ALARMTIMER_NORESTART;
+		return;
 
 	dev_info(&charger->client->dev, "ICL ramp alarm, ramp=%d\n",
 		 charger->icl_ramp);
@@ -3632,8 +3629,6 @@ static enum alarmtimer_restart p9221_icl_ramp_alarm_cb(struct alarm *alarm,
 	/* Alarm is in atomic context, schedule work to complete the task */
 	pm_stay_awake(charger->dev);
 	schedule_delayed_work(&charger->icl_ramp_work, msecs_to_jiffies(100));
-
-	return ALARMTIMER_NORESTART;
 }
 
 static void p9221_icl_ramp_work(struct work_struct *work)
