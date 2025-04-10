@@ -77,7 +77,7 @@ static void __mfc_enc_uncomp_format(struct mfc_ctx *ctx)
 	}
 }
 
-static struct v4l2_queryctrl *__mfc_enc_get_ctrl(int id)
+static struct v4l2_query_ext_ctrl *__mfc_enc_get_ctrl(int id)
 {
 	unsigned long i;
 
@@ -89,7 +89,7 @@ static struct v4l2_queryctrl *__mfc_enc_get_ctrl(int id)
 
 static int __mfc_enc_check_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl)
 {
-	struct v4l2_queryctrl *c;
+	struct v4l2_query_ext_ctrl *c;
 	struct mfc_enc *enc = ctx->enc_priv;
 	struct mfc_enc_params *p = &enc->params;
 
@@ -100,7 +100,7 @@ static int __mfc_enc_check_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ct
 	}
 
 	if ((ctrl->id == V4L2_CID_MPEG_VIDEO_GOP_SIZE) && (ctrl->value > c->maximum)) {
-		mfc_ctx_info("GOP_SIZE is changed to max(%d -> %d)\n",
+		mfc_ctx_info("GOP_SIZE is changed to max(%d -> %lld)\n",
                                 ctrl->value, c->maximum);
 		ctrl->value = c->maximum;
 	}
@@ -1031,11 +1031,11 @@ static int mfc_enc_streamoff(struct file *file, void *priv,
 }
 
 /* Query a ctrl */
-static int mfc_enc_queryctrl(struct file *file, void *priv,
-			    struct v4l2_queryctrl *qc)
+static int mfc_enc_query_ext_ctrl(struct file *file, void *priv,
+				  struct v4l2_query_ext_ctrl *qc)
 {
 	struct mfc_dev *dev = video_drvdata(file);
-	struct v4l2_queryctrl *c;
+	struct v4l2_query_ext_ctrl *c;
 
 	c = __mfc_enc_get_ctrl(qc->id);
 	if (!c) {
@@ -1044,6 +1044,8 @@ static int mfc_enc_queryctrl(struct file *file, void *priv,
 	}
 
 	*qc = *c;
+	qc->elems = 1;
+	qc->elem_size = 4;
 	return 0;
 }
 
@@ -2388,7 +2390,7 @@ static const struct v4l2_ioctl_ops mfc_enc_ioctl_ops = {
 	.vidioc_dqbuf			= mfc_enc_dqbuf,
 	.vidioc_streamon		= mfc_enc_streamon,
 	.vidioc_streamoff		= mfc_enc_streamoff,
-	.vidioc_queryctrl		= mfc_enc_queryctrl,
+	.vidioc_query_ext_ctrl		= mfc_enc_query_ext_ctrl,
 	.vidioc_g_ctrl			= mfc_enc_g_ctrl,
 	.vidioc_s_ctrl			= mfc_enc_s_ctrl,
 	.vidioc_g_ext_ctrls		= mfc_enc_g_ext_ctrls,
