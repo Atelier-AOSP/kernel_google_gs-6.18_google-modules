@@ -1196,19 +1196,6 @@ static int __mfc_enc_get_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl
 	return ret;
 }
 
-static int mfc_enc_g_ctrl(struct file *file, void *priv,
-			 struct v4l2_control *ctrl)
-{
-	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
-	int ret = 0;
-
-	mfc_debug_enter();
-	ret = __mfc_enc_get_ctrl_val(ctx, ctrl);
-	mfc_debug_leave();
-
-	return ret;
-}
-
 static inline int __mfc_enc_h264_level(enum v4l2_mpeg_video_h264_level lvl)
 {
 	static unsigned int t[V4L2_MPEG_VIDEO_H264_LEVEL_6_0 + 1] = {
@@ -2251,25 +2238,6 @@ static int __mfc_enc_set_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl
 	return ret;
 }
 
-static int mfc_enc_s_ctrl(struct file *file, void *priv,
-			 struct v4l2_control *ctrl)
-{
-	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
-	int ret = 0;
-
-	mfc_debug_enter();
-
-	ret = __mfc_enc_check_ctrl_val(ctx, ctrl);
-	if (ret != 0)
-		return ret;
-
-	ret = __mfc_enc_set_ctrl_val(ctx, ctrl);
-
-	mfc_debug_leave();
-
-	return ret;
-}
-
 static int mfc_enc_g_ext_ctrls(struct file *file, void *priv,
 			      struct v4l2_ext_controls *f)
 {
@@ -2279,8 +2247,7 @@ static int mfc_enc_g_ext_ctrls(struct file *file, void *priv,
 	int i;
 	int ret = 0;
 
-	if (f->which != V4L2_CTRL_CLASS_CODEC)
-		return -EINVAL;
+	mfc_debug(5, "[CTRLS] which: %#x\n", f->which);
 
 	for (i = 0; i < f->count; i++) {
 		ext_ctrl = (f->controls + i);
@@ -2313,8 +2280,7 @@ static int mfc_enc_s_ext_ctrls(struct file *file, void *priv,
 
 	mfc_debug_enter();
 
-	if (f->which != V4L2_CTRL_CLASS_CODEC)
-		return -EINVAL;
+	mfc_debug(5, "[CTRLS] which: %#x\n", f->which);
 
 	for (i = 0; i < f->count; i++) {
 		ext_ctrl = (f->controls + i);
@@ -2328,7 +2294,7 @@ static int mfc_enc_s_ext_ctrls(struct file *file, void *priv,
 			break;
 		}
 
-		ret = __mfc_enc_set_param(ctx, &ctrl);
+		ret = __mfc_enc_set_ctrl_val(ctx, &ctrl);
 		if (ret != 0) {
 			f->error_idx = i;
 			break;
@@ -2351,8 +2317,7 @@ static int mfc_enc_try_ext_ctrls(struct file *file, void *priv,
 
 	mfc_debug_enter();
 
-	if (f->which != V4L2_CTRL_CLASS_CODEC)
-		return -EINVAL;
+	mfc_debug(5, "[CTRLS] which: %#x\n", f->which);
 
 	for (i = 0; i < f->count; i++) {
 		ext_ctrl = (f->controls + i);
@@ -2391,8 +2356,6 @@ static const struct v4l2_ioctl_ops mfc_enc_ioctl_ops = {
 	.vidioc_streamon		= mfc_enc_streamon,
 	.vidioc_streamoff		= mfc_enc_streamoff,
 	.vidioc_query_ext_ctrl		= mfc_enc_query_ext_ctrl,
-	.vidioc_g_ctrl			= mfc_enc_g_ctrl,
-	.vidioc_s_ctrl			= mfc_enc_s_ctrl,
 	.vidioc_g_ext_ctrls		= mfc_enc_g_ext_ctrls,
 	.vidioc_s_ext_ctrls		= mfc_enc_s_ext_ctrls,
 	.vidioc_try_ext_ctrls		= mfc_enc_try_ext_ctrls,
