@@ -144,8 +144,7 @@ static void ptick_init(struct rq *rq)
 	if (WARN_ON(!vrq->ptick_timer))
 		return;
 
-	hrtimer_init(vrq->ptick_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
-	vrq->ptick_timer->function = ptick;
+	hrtimer_setup(vrq->ptick_timer, ptick, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
 }
 
 static void init_vendor_rq(void)
