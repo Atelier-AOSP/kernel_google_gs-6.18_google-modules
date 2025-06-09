@@ -528,7 +528,6 @@ MODULE_DEVICE_TABLE(of, of_gs_chipid_ids);
 
 /**
  *  gs_chipid_early_init: Early chipid initialization
- *  @dev: pointer to chipid device
  */
 void gs_chipid_early_init(void)
 {
