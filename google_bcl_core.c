@@ -35,7 +35,7 @@
 #include <dt-bindings/interrupt-controller/zuma.h>
 #elif IS_ENABLED(CONFIG_REGULATOR_S2MPG10)
 #include <dt-bindings/interrupt-controller/gs101.h>
-#include <linux/mfd/samsung/s2mpg10.h>
+#include <linux/mfd/samsung/s2mpg10-local.h>
 #include <linux/mfd/samsung/s2mpg11.h>
 #elif IS_ENABLED(CONFIG_REGULATOR_S2MPG12)
 #include <dt-bindings/interrupt-controller/gs201.h>
