@@ -4,6 +4,10 @@
 ccflags-y += -I$(src)/../include
 obj-$(CONFIG_VH_SCHED)	+= sched/
 
+# clocktrace
+CFLAGS_clocktrace.o = -I$(src)
+obj-$(CONFIG_VH_CLOCKTRACE) += clocktrace.o
+
 # systrace
 CFLAGS_systrace.o = -I$(src)
 obj-$(CONFIG_VH_SYSTRACE) += systrace.o
