@@ -2,6 +2,7 @@
 #include <linux/sched/clock.h>
 #include "sched.h"
 #include "sched_events.h"
+#include <trace/events/clock.h>
 #include "drivers/android/binder_internal.h"
 #include "drivers/android/binder/rust_binder.h"
 #include <asm/atomic.h>
