@@ -22,6 +22,7 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/bcl_exynos.h>
+#include <trace/events/clock.h>
 
 static void trace_qos(bool throttle, const char *devname)
 {
