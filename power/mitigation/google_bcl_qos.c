@@ -23,6 +23,7 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/bcl_exynos.h>
+#include <trace/events/clock.h>
 
 
 struct qos_data {
