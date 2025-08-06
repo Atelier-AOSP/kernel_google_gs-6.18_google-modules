@@ -2123,25 +2123,25 @@ static void google_bcl_parse_clk_div_dtree(struct bcl_device *bcl_dev)
 	bcl_dev->vdroop1_pin = devm_gpiod_get_index_optional(bcl_dev->device,
 							     NULL, 0,
 							     GPIOD_ASIS);
-	if (!bcl_dev->vdroop1_pin)
+	if (IS_ERR_OR_NULL(bcl_dev->vdroop1_pin))
 		dev_notice(bcl_dev->device,
 			   "no vdroop1_pin in DT, continuing without\n");
 	bcl_dev->vdroop2_pin = devm_gpiod_get_index_optional(bcl_dev->device,
 							     NULL, 1,
 							     GPIOD_ASIS);
-	if (!bcl_dev->vdroop2_pin)
+	if (IS_ERR_OR_NULL(bcl_dev->vdroop2_pin))
 		dev_notice(bcl_dev->device,
 			   "no vdroop2_pin in DT, continuing without\n");
 	bcl_dev->modem_gpio1_pin = devm_gpiod_get_index_optional(bcl_dev->device,
 							     NULL, 2,
 							     GPIOD_ASIS);
-	if (!bcl_dev->modem_gpio1_pin)
+	if (IS_ERR_OR_NULL(bcl_dev->modem_gpio1_pin))
 		dev_notice(bcl_dev->device,
 			   "no modem_gpio1_pin in DT, continuing without\n");
 	bcl_dev->modem_gpio2_pin = devm_gpiod_get_index_optional(bcl_dev->device,
 							     NULL, 3,
 							     GPIOD_ASIS);
-	if (!bcl_dev->modem_gpio2_pin)
+	if (IS_ERR_OR_NULL(bcl_dev->modem_gpio2_pin))
 		dev_notice(bcl_dev->device,
 			   "no modem_gpio2_pin in DT, continuing without\n");
 	ret = of_property_read_u32(np, "rffe_channel", &val);
@@ -2162,6 +2162,7 @@ static void google_bcl_parse_dtree(struct bcl_device *bcl_dev)
 {
 	int ret, len, i;
 	int read;
+	struct device_node *child;
 	struct device_node *p_np;
 	struct device_node *np;
 

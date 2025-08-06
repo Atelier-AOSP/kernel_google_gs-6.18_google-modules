@@ -10,7 +10,6 @@
 #include <linux/thermal.h>
 #include <linux/workqueue.h>
 #include <soc/google/exynos_pm_qos.h>
-#include <dt-bindings/power/s2mpg1x-power.h>
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
 #include <dt-bindings/soc/google/zumapro-bcl.h>
 #elif IS_ENABLED(CONFIG_SOC_GS101)
