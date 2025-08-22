@@ -743,6 +743,9 @@ void kbase_mem_migrate_init(struct kbase_device *kbdev)
 {
 	struct kbase_mem_migrate *mem_migrate = &kbdev->mem_migrate;
 
+	pr_warn_once("Page migration disabled due to kernel API changes (b/440410669)\n");
+	kbase_page_migration_enabled = 0;
+
 	/* Page migration should only be enabled if compaction is
 	 * enabled in the kernel otherwise pages cannot be marked as
 	 * movable.

@@ -50,6 +50,15 @@ struct page;
 
 #define IS_PAGE_MOVABLE(status) ((bool)(status & PAGE_MOVABLE_MASK))
 
+/*
+ * FIXME(b/440410669): These PageMovable APIs were removed upstream in kernel
+ * v6.17-rc1. This is a temporary workaround to allow the driver to build and
+ * load on newer kernels. While this unblocks development, a proper solution
+ * is still required.
+ */
+#define __SetPageMovable(p, op)	({(void)(p); (void)(op);})
+#define __ClearPageMovable(p)	({(void)(p);})
+
 /**
  * kbase_alloc_page_metadata - Allocate and initialize page metadata
  * @kbdev:    Pointer to kbase device.
