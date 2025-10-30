@@ -560,7 +560,7 @@ err_no_device:
 /* Release MFC context */
 static int mfc_release(struct file *file)
 {
-	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
+	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
 	struct mfc_dev *dev = ctx->dev;
 	struct mfc_ctx *move_ctx;
 	struct mfc_core *maincore;
@@ -670,7 +670,7 @@ end_release:
 static __poll_t mfc_poll(struct file *file,
 				 struct poll_table_struct *wait)
 {
-	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
+	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
 	unsigned long req_events = poll_requested_events(wait);
 	__poll_t ret = 0;
 
@@ -699,7 +699,7 @@ static __poll_t mfc_poll(struct file *file,
 /* Mmap */
 static int mfc_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
+	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
 	int ret;
 
