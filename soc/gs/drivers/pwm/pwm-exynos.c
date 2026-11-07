@@ -16,6 +16,7 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
@@ -315,7 +316,7 @@ static int pwm_samsung_request(struct pwm_chip *chip, struct pwm_device *pwm)
 	unsigned long flags;
 
 	if (!(our_chip->variant.output_mask & BIT(pwm->hwpwm))) {
-		dev_warn(chip->dev,
+		dev_warn(pwmchip_parent(chip),
 			"tried to request PWM channel %d without output\n",
 			pwm->hwpwm);
 		return -EINVAL;
@@ -668,7 +669,6 @@ static const struct pwm_ops pwm_samsung_ops = {
 	.free		= pwm_samsung_free,
 	.apply		= pwm_samsung_apply,
 	.capture	= pwm_samsung_capture,
-	.owner		= THIS_MODULE,
 };
 
 #ifdef CONFIG_OF
