@@ -683,7 +683,7 @@ int ufs_pixel_fips_verify(struct ufs_hba *hba)
 	 * Enable clocks, exit hibern8, set link as active
 	 * Will release on function exit
 	 */
-	ufshcd_hold(hba, false);
+	ufshcd_hold(hba);
 
 	/*
 	 * Disable all interrupts except UTP Transfer Request Completion

@@ -721,21 +721,6 @@ static void pixel_ufs_send_command(void *data, struct ufs_hba *hba,
 	pixel_ufs_trace_upiu_cmd(hba, lrbp, true);
 }
 
-static inline int ufshcd_get_tr_ocs(struct ufshcd_lrb *lrbp)
-{
-	return le32_to_cpu(lrbp->utr_descriptor_ptr->header.dword_2) & MASK_OCS;
-}
-
-static inline int ufshcd_get_req_rsp(struct utp_upiu_rsp *ucd_rsp_ptr)
-{
-	return be32_to_cpu(ucd_rsp_ptr->header.dword_0) >> 24;
-}
-
-static inline int ufshcd_get_rsp_upiu_result(struct utp_upiu_rsp *ucd_rsp_ptr)
-{
-	return be32_to_cpu(ucd_rsp_ptr->header.dword_1) & MASK_RSP_UPIU_RESULT;
-}
-
 static void pixel_ufs_compl_command(void *data, struct ufs_hba *hba,
 					struct ufshcd_lrb *lrbp)
 {
@@ -938,9 +923,14 @@ static ssize_t manual_gc_store(struct device *dev,
 	}
 
 	if (!ufs->manual_gc.hagc_support) {
-		err = ufshcd_bkops_ctrl(hba, (value == MANUAL_GC_ON) ?
-					BKOPS_STATUS_NON_CRITICAL:
-					BKOPS_STATUS_CRITICAL);
+		/* ufshcd_bkops_ctrl() takes its threshold from urgent_bkops_lvl since v6.x */
+		enum bkops_status saved_lvl = hba->urgent_bkops_lvl;
+
+		hba->urgent_bkops_lvl = (value == MANUAL_GC_ON) ?
+					BKOPS_STATUS_NON_CRITICAL :
+					BKOPS_STATUS_CRITICAL;
+		err = ufshcd_bkops_ctrl(hba);
+		hba->urgent_bkops_lvl = saved_lvl;
 		if (!hba->auto_bkops_enabled)
 			err = -EAGAIN;
 	}
@@ -1782,7 +1772,7 @@ static ssize_t _name##_show(struct device *dev,			\
 	struct ufs_hba *hba = dev_get_drvdata(dev);			\
 	u32 value;						\
 	pm_runtime_get_sync(hba->dev);			\
-	ufshcd_hold(hba, false);			\
+	ufshcd_hold(hba);			\
 	value = ufshcd_readl(hba, REG##_uname);			\
 	ufshcd_release(hba);			\
 	pm_runtime_put(hba->dev);			\
@@ -1792,8 +1782,8 @@ static DEVICE_ATTR_RO(_name)
 
 PIXEL_HC_REG_ATTR(cap, _CONTROLLER_CAPABILITIES);
 PIXEL_HC_REG_ATTR(ver, _UFS_VERSION);
-PIXEL_HC_REG_ATTR(hcpid, _CONTROLLER_DEV_ID);
-PIXEL_HC_REG_ATTR(hcmid, _CONTROLLER_PROD_ID);
+PIXEL_HC_REG_ATTR(hcpid, _CONTROLLER_PID);
+PIXEL_HC_REG_ATTR(hcmid, _CONTROLLER_MID);
 PIXEL_HC_REG_ATTR(ahit, _AUTO_HIBERNATE_IDLE_TIMER);
 PIXEL_HC_REG_ATTR(is, _INTERRUPT_STATUS);
 PIXEL_HC_REG_ATTR(ie, _INTERRUPT_ENABLE);

@@ -11,6 +11,7 @@
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/slg51000.h>
 #include <linux/of_gpio.h>

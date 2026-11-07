@@ -91,9 +91,9 @@ int exynos_ufs_crypto_init_sw_keys_mode(struct ufs_hba *hba)
 	hba->caps |= UFSHCD_CAP_CRYPTO;
 
 	/* Advertise crypto quirks to ufshcd-core. */
-	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_CUSTOM_CRYPTO_PROFILE |
-		               UFSHCD_ANDROID_QUIRK_BROKEN_CRYPTO_ENABLE |
-		               UFSHCD_ANDROID_QUIRK_KEYS_IN_PRDT;
+	hba->android_quirks |= UFSHCD_QUIRK_CUSTOM_CRYPTO_PROFILE |
+		               UFSHCD_QUIRK_BROKEN_CRYPTO_ENABLE |
+		               UFSHCD_QUIRK_KEYS_IN_PRDT;
 	hba->sg_entry_size = sizeof(struct fmp_sg_entry);
 
 	/* Advertise crypto capabilities to the block layer. */

@@ -228,6 +228,9 @@ void exynos_ehld_do_policy(void)
  * events. The `ARMV8_IDX_TO_COUNTER` is cloned to convert the `event->hw.idx` to the corresponding
  * ARMv8 counter ID.
  */
+#ifndef ARMV8_PMU_COUNTER_MASK
+#define ARMV8_PMU_COUNTER_MASK 0x1f
+#endif
 #define ARMV8_IDX_COUNTER0 1
 #define ARMV8_IDX_TO_COUNTER(x) (((x) - ARMV8_IDX_COUNTER0) & ARMV8_PMU_COUNTER_MASK)
 
@@ -928,8 +931,6 @@ static int exynos_ehld_init_dt(struct device *dev)
 	unsigned int cpu = 0, offset, base;
 	struct exynos_ehld_ctrl *ctrl;
 	u32 val, i;
-	struct property *prop;
-	const __be32 *cur;
 
 	if (of_property_read_u32(np, "cs_base", &base)) {
 		ehld_info(1, "ehld: no cs_base addr in device tree\n");
@@ -943,7 +944,7 @@ static int exynos_ehld_init_dt(struct device *dev)
 		return -ENOMEM;
 
 	i = 0;
-	of_property_for_each_u32(np, "sgi_base", prop, cur, val) {
+	of_property_for_each_u32(np, "sgi_base", val) {
 		if (i >= num_possible_cpus() || !val)
 			return -EINVAL;
 		ehld_main.sgi_base[i] = devm_ioremap(dev, val, SZ_4K);
