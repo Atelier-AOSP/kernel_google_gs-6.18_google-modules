@@ -807,8 +807,7 @@ void google_tcpci_shim_unregister_port(struct google_shim_tcpci *tcpci)
 }
 EXPORT_SYMBOL_GPL(google_tcpci_shim_unregister_port);
 
-static int google_tcpci_shim_probe(struct i2c_client *client,
-				   const struct i2c_device_id *i2c_id)
+static int google_tcpci_shim_probe(struct i2c_client *client)
 {
 	struct google_shim_tcpci_chip *chip;
 	int err;

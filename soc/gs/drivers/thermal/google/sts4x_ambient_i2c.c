@@ -138,8 +138,7 @@ static struct thermal_zone_device_ops sts4x_tzd_ops = {
 	.get_temp = sts4x_get_temp,
 };
 
-static int sts4x_probe(struct i2c_client *client,
-		       const struct i2c_device_id *sts4x_id)
+static int sts4x_probe(struct i2c_client *client)
 {
 	struct sts4x_data *data;
 	u8 cmd[] = {STS4X_CMD_RESET};
