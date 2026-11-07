@@ -1020,7 +1020,7 @@ static int __maybe_unused xhci_exynos_suspend(struct device *dev)
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	int ret = 0;
 	int ret_phy = 0;
-	int bypass = 0;
+	bool bypass = false;
 	struct usb_device *udev = hcd->self.root_hub;
 	pm_message_t msg;
 
@@ -1062,7 +1062,7 @@ static int __maybe_unused xhci_exynos_resume(struct device *dev)
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	int ret = 0;
 	int ret_phy = 0;
-	int bypass = 0;
+	bool bypass = false;
 	struct usb_device *udev = hcd->self.root_hub;
 	pm_message_t msg;
 
@@ -1075,7 +1075,7 @@ static int __maybe_unused xhci_exynos_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	ret = xhci_resume(xhci, 0);
+	ret = xhci_resume(xhci, PMSG_RESUME);
 	if (ret) {
 		dev_err(xhci_exynos->dev, "%s: xhci resume failed, ret = %d\n", __func__, ret);
 		return ret;

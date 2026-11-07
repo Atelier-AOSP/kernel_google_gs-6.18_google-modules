@@ -6,6 +6,7 @@
  * Copyright 2021 Google LLC
  */
 
+#include <linux/vmalloc.h>
 #include <linux/module.h>
 #include <linux/seq_file.h>
 #include <soc/google/meminfo.h>

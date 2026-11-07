@@ -2325,8 +2325,7 @@ static void exynos_serial_resetport(struct uart_port *port,
 	unsigned int ucon_mask;
 
 	ucon_mask = info->clksel_mask;
-	if (info->type == PORT_S3C2440)
-		ucon_mask |= S3C2440_UCON0_DIVMASK;
+	/* PORT_S3C2440 no longer exists (v6.x); only S3C6400-type ports here */
 
 	ucon &= ucon_mask;
 	if (ourport->dbg_mode & UART_LOOPBACK_MODE) {
@@ -2563,7 +2562,7 @@ bool exynos_uart_console_enabled(void)
 
 	list_for_each_entry(ourport, &drvdata_list, node) {
 		port = &ourport->port;
-		if (uart_console_enabled(port))
+		if (uart_console_registered(port))
 			return true;
 	}
 	return false;

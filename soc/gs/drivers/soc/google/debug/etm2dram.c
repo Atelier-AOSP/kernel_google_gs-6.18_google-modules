@@ -340,7 +340,7 @@ arm_store(struct device *dev, struct device_attribute *attr,
 	int ret;
 	struct etm2dram_private *data = dev_get_drvdata(dev);
 
-	ret = strtobool(buf, &new_value);
+	ret = kstrtobool(buf, &new_value);
 	if (ret < 0)
 		return ret;
 

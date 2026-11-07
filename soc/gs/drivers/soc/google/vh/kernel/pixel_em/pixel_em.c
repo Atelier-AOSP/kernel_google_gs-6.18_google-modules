@@ -52,7 +52,7 @@ extern bool pixel_cpu_init;
 static struct mutex profile_list_lock;
 static LIST_HEAD(profile_list);
 static struct pixel_em_profile *active_profile;
-static struct pixel_idle_em *idle_profile;
+static struct pixel_idle_em *idle_profile __maybe_unused;
 
 static struct mutex sysfs_lock; // Synchronize sysfs calls.
 static struct kobject *primary_sysfs_folder;

@@ -20,6 +20,7 @@ static LIST_HEAD(free_list);
 static size_t list_nr_pages;
 wait_queue_head_t freelist_waitqueue;
 struct task_struct *freelist_task;
+EXPORT_SYMBOL_GPL(freelist_task);	/* used by vh/kernel/mm (as with the ACK helper) */
 static DEFINE_SPINLOCK(free_list_lock);
 
 void deferred_free(struct deferred_freelist_item *item,

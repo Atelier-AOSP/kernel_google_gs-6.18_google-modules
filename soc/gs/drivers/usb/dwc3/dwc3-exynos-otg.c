@@ -10,6 +10,7 @@
 #include <dwc3/core.h> /* $(srctree)/drivers/usb/dwc3/core.h */
 #include <dwc3/io.h> /* $(srctree)/drivers/usb/dwc3/io.h */
 
+#include <linux/of_platform.h>
 #include <linux/mutex.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -219,7 +220,7 @@ static void dwc3_usb3_phy_restart(struct dwc3_otg *dotg)
 
 	dev_info(dotg->exynos->dev, "ssphy restart");
 	usb3_phy_control(dotg, SSPHY_USB, 0);
-	exynos_usbdrd_phy_tune(dwc->usb3_generic_phy, OTG_STATE_A_IDLE);
+	exynos_usbdrd_phy_tune(dwc->usb3_generic_phy[0], OTG_STATE_A_IDLE);
 	usb3_phy_control(dotg, SSPHY_USB, 1);
 
 	mutex_unlock(&dotg->role_lock);
@@ -316,10 +317,10 @@ void dwc3_otg_phy_tune(struct dwc3 *dwc, bool is_host)
 		phy_state = OTG_STATE_B_IDLE;
 	}
 
-	exynos_usbdrd_phy_tune(dwc->usb2_generic_phy,
+	exynos_usbdrd_phy_tune(dwc->usb2_generic_phy[0],
 			       phy_state);
 #ifdef CONFIG_EXYNOS_USBDRD_PHY30
-	exynos_usbdrd_phy_tune(dwc->usb3_generic_phy,
+	exynos_usbdrd_phy_tune(dwc->usb3_generic_phy[0],
 			       phy_state);
 #endif
 }
@@ -735,7 +736,7 @@ static int dwc3_otg_usbdp_tca_cb(struct gvotable_election *el, const char *reaso
 		goto done;
 	}
 
-	exynos_usbdrd_usbdp_tca_set(dwc->usb3_generic_phy, DWC_PHY_TCA_USB_ONLY,
+	exynos_usbdrd_usbdp_tca_set(dwc->usb3_generic_phy[0], DWC_PHY_TCA_USB_ONLY,
 				    DWC_PHY_TCA_LOW_PWR_DISABLE);
 
 done:

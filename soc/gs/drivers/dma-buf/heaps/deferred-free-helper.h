@@ -52,4 +52,6 @@ void deferred_free(struct deferred_freelist_item *item,
 		   void (*free)(struct deferred_freelist_item *i,
 				enum df_reason reason),
 		   size_t nr_pages);
+extern struct task_struct *freelist_task;
+
 #endif
