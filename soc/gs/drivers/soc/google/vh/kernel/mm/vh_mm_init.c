@@ -16,7 +16,7 @@
 #include <trace/hooks/mm.h>
 #include <trace/hooks/vmscan.h>
 #include <uapi/linux/sched/types.h>
-#include <heaps/deferred-free-helper.h>
+#include "../../../../dma-buf/heaps/deferred-free-helper.h"
 
 #include "../../include/pixel_mm_hint.h"
 #include "../../include/pixel_mm.h"
