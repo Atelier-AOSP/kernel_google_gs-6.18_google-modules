@@ -3066,7 +3066,7 @@ static ssize_t hs_clock_store(struct device *dev,
 		goto out;
 	}
 
-	strlcpy(params, buf, sizeof(params));
+	strscpy(params, buf, sizeof(params));
 	hs_clk_str = strsep(&p, " ");
 	apply_now_str = strsep(&p, " ");
 
