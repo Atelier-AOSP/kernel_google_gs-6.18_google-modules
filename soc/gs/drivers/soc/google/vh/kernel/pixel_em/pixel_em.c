@@ -195,7 +195,9 @@ static void apply_profile(struct pixel_em_profile *profile)
 			pr_err("Could not find cpufreq policy for CPU %d!\n", cpu);
 		}
 
+#if IS_ENABLED(CONFIG_VH_SCHED)
 		update_thermal_freq_cap(cpu);
+#endif
 	}
 }
 
@@ -793,8 +795,19 @@ static bool generate_em_cluster(struct pixel_em_cluster *dst, struct em_perf_dom
     int first_cpu = cpumask_first(em_span_cpus(pd));
     int cpu_scale = topology_get_cpu_scale(first_cpu);
 	int max_freq_index = pd->nr_perf_states - 1;
-	unsigned long max_freq = pd->table[max_freq_index].frequency;
+	struct em_perf_state *table;
+	unsigned long max_freq;
 	int opp_id;
+
+	/* allocate before entering the RCU read-side section (GFP_KERNEL may sleep) */
+	dst->opps = kcalloc(pd->nr_perf_states, sizeof(*dst->opps), GFP_KERNEL);
+	if (!dst->opps)
+		return false;
+
+	/* em_perf_domain::table became the RCU-protected em_table (v6.9) */
+	rcu_read_lock();
+	table = em_perf_state_from_pd(pd);
+	max_freq = table[max_freq_index].frequency;
 
 	cpumask_copy(&dst->cpus, em_span_cpus(pd));
 #if IS_ENABLED(CONFIG_PIXEL_EM_VOLTAGE_SCALING)
@@ -810,18 +823,16 @@ static bool generate_em_cluster(struct pixel_em_cluster *dst, struct em_perf_dom
 #endif
 	dst->num_opps = pd->nr_perf_states;
 
-	dst->opps = kcalloc(dst->num_opps, sizeof(*dst->opps), GFP_KERNEL);
-	if (!dst->opps)
-		return false;
 
 	for (opp_id = 0; opp_id < pd->nr_perf_states; opp_id++) {
-		dst->opps[opp_id].freq = pd->table[opp_id].frequency;
-		dst->opps[opp_id].power = pd->table[opp_id].power;
+		dst->opps[opp_id].freq = table[opp_id].frequency;
+		dst->opps[opp_id].power = table[opp_id].power;
 		dst->opps[opp_id].capacity = (dst->opps[opp_id].freq * cpu_scale) / max_freq;
-		dst->opps[opp_id].cost = pd->table[opp_id].power / dst->opps[opp_id].capacity;
+		dst->opps[opp_id].cost = table[opp_id].power / dst->opps[opp_id].capacity;
 		update_inefficient_prev_opp(dst->opps, opp_id);
 	}
 
+	rcu_read_unlock();
 	return true;
 }
 
@@ -1545,7 +1556,7 @@ static int pixel_em_drv_probe(struct platform_device *dev)
 	int res;
 	struct pixel_em_profile *default_profile;
 	int num_dt_profiles;
-	unsigned long flags;
+	unsigned long flags __maybe_unused;
 	int i;
 
 	mutex_init(&sysfs_lock);

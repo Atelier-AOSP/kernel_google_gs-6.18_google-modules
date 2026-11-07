@@ -129,7 +129,9 @@ static int __mfc_core_parse_mfc_qos_platdata(struct device_node *np,
 	return 0;
 }
 
-int mfc_core_sysmmu_fault_handler(struct iommu_fault *fault, void *param)
+/* iommu_fault_handler_t (iommu_register_device_fault_handler() is gone in v6.x) */
+int mfc_core_sysmmu_fault_handler(struct iommu_domain *domain, struct device *fdev,
+				  unsigned long iova, int flags, void *param)
 {
 	struct mfc_core *core = (struct mfc_core *)param;
 	unsigned int trans_info, fault_status;
@@ -197,11 +199,11 @@ int mfc_core_sysmmu_fault_handler(struct iommu_fault *fault, void *param)
 			core->logging_data->fault_trans_info = MFC_MMU1_READL(trans_info);
 		}
 	}
-	core->logging_data->fault_addr = (unsigned int)(fault->event.addr);
+	core->logging_data->fault_addr = (unsigned int)iova;
 
 	snprintf(core->crash_info, MFC_CRASH_INFO_LEN,
 		"MFC-%d SysMMU PAGE FAULT at %#010llx (AxID: %#x), fault_status: %#x\n",
-		core->id, fault->event.addr,
+		core->id, (unsigned long long)iova,
 		core->logging_data->fault_trans_info, core->logging_data->fault_status);
 	mfc_core_err("%s", core->crash_info);
 	MFC_TRACE_CORE("%s", core->crash_info);
