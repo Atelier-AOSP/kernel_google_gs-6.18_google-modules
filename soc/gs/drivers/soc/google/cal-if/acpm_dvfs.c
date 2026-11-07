@@ -383,7 +383,11 @@ int exynos_acpm_dvfs_init(void)
 					sizeof(uint32_t);
 			}
 
-			ret2 = devm_device_add_groups(acpm_dvfs.device, async_dvfs_groups);
+			/* devm_device_add_groups() was removed in v6.11 */
+			ret2 = 0;
+			for (int g = 0; async_dvfs_groups[g] && !ret2; g++)
+				ret2 = devm_device_add_group(acpm_dvfs.device,
+							      async_dvfs_groups[g]);
 			if (ret2)
 				dev_err(acpm_dvfs.device, "Failed to add device groups\n");
 

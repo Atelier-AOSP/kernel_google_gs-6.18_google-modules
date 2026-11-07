@@ -1770,7 +1770,10 @@ static void exynos_ufs_remove(struct platform_device *pdev)
 
 static void exynos_ufs_shutdown(struct platform_device *pdev)
 {
-	ufshcd_shutdown((struct ufs_hba *)platform_get_drvdata(pdev));
+	/*
+	 * ufshcd_shutdown() is gone since v6.x: the UFS core shuts the link
+	 * down from the SCSI well-known LUN device's shutdown callback.
+	 */
 }
 
 static const struct dev_pm_ops exynos_ufs_dev_pm_ops = {

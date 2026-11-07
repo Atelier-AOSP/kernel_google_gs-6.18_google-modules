@@ -131,8 +131,8 @@ void rvh_madvise_pageout_end(void *data, void *private, struct list_head *folio_
 	while (!list_empty(&vendor_private->ret_list)) {
 		struct page *page;
 
-		page = lru_to_page(&vendor_private->ret_list);
-		wait_on_page_writeback(page);
+		page = list_last_entry(&vendor_private->ret_list, struct page, lru);
+		folio_wait_writeback(page_folio(page));
 		list_move(&page->lru, folio_list);
 	}
 
