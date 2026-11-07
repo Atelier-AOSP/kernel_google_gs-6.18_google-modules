@@ -2960,7 +2960,7 @@ int syna_cdev_create_sysfs(struct syna_tcm *tcm,
 		goto err_add_chardev;
 	}
 
-	device_class = class_create(THIS_MODULE, PLATFORM_DRIVER_NAME);
+	device_class = class_create(PLATFORM_DRIVER_NAME);
 	if (IS_ERR(device_class)) {
 		LOGE("Fail to create device class\n");
 		retval = PTR_ERR(device_class);
