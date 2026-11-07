@@ -2262,8 +2262,8 @@ static void google_bcl_parse_clk_div_dtree(struct bcl_device *bcl_dev)
 	bcl_dev->core_conf[SUBSYSTEM_CPU0].clkdivstep = ret ? 0 : val;
 	bcl_dev->vdroop1_pin = of_get_named_gpio(np, "gpios", 0);
 	bcl_dev->vdroop2_pin = of_get_named_gpio(np, "gpios", 1);
-	bcl_dev->modem_gpio1_pin = of_get_gpio(np, 2);
-	bcl_dev->modem_gpio2_pin = of_get_gpio(np, 3);
+	bcl_dev->modem_gpio1_pin = of_get_named_gpio(np, "gpios", 2);
+	bcl_dev->modem_gpio2_pin = of_get_named_gpio(np, "gpios", 3);
 	ret = of_property_read_u32(np, "rffe_channel", &val);
 	bcl_dev->rffe_channel = ret ? 11 : val;
 	ret = of_property_read_u32(np, "cpu0_cluster", &val);
