@@ -24,6 +24,16 @@
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/ufshcd.h>
 
+/*
+ * v6.7 replaced the raw dword_N members of the UTRD/UPIU headers with bitfields
+ * and dropped UPIU_HEADER_DWORD(). Both headers are fixed hardware layouts, so
+ * keep writing the same 32-bit words through these accessors.
+ */
+#define FIPS_UTRD_HDR(h)	((__le32 *)&(h))
+#define FIPS_UPIU_HDR(h)	((__be32 *)&(h))
+#define FIPS_UPIU_HEADER_DWORD(b3, b2, b1, b0) \
+	cpu_to_be32(((u32)(b3) << 24) | ((u32)(b2) << 16) | ((u32)(b1) << 8) | (b0))
+
 #undef pr_fmt
 #define pr_fmt(fmt) "ufs-pixel-fips140: " fmt
 
@@ -304,11 +314,11 @@ static void ufs_pixel_fips_build_utrd(struct ufs_hba *hba,
 
 	memset(utrd, 0, sizeof(struct utp_transfer_req_desc));
 
-	utrd->header.dword_0 = cpu_to_le32(UTRD_CMD_TYPE_UFS_STORAGE |
+	FIPS_UTRD_HDR(utrd->header)[0] = cpu_to_le32(UTRD_CMD_TYPE_UFS_STORAGE |
 					   data_direction | crypto);
-	utrd->header.dword_1 = 0;
-	utrd->header.dword_2 = cpu_to_le32(OCS_INVALID_COMMAND_STATUS);
-	utrd->header.dword_3 = 0;
+	FIPS_UTRD_HDR(utrd->header)[1] = 0;
+	FIPS_UTRD_HDR(utrd->header)[2] = cpu_to_le32(OCS_INVALID_COMMAND_STATUS);
+	FIPS_UTRD_HDR(utrd->header)[3] = 0;
 
 	utrd->command_desc_base_addr = cpu_to_le64(ucd_dma_addr);
 
@@ -386,10 +396,10 @@ static void ufs_pixel_fips_build_upiu(struct ufs_hba *hba,
 	struct utp_upiu_req *ucd_req_ptr =
 		(struct utp_upiu_req *)ucd_addr->command_upiu;
 
-	ucd_req_ptr->header.dword_0 = UPIU_HEADER_DWORD(
+	FIPS_UPIU_HDR(ucd_req_ptr->header)[0] = FIPS_UPIU_HEADER_DWORD(
 		UPIU_TRANSACTION_COMMAND, flags, lun, task_tag);
-	ucd_req_ptr->header.dword_1 = 0;
-	ucd_req_ptr->header.dword_2 = 0;
+	FIPS_UPIU_HDR(ucd_req_ptr->header)[1] = 0;
+	FIPS_UPIU_HDR(ucd_req_ptr->header)[2] = 0;
 	ucd_req_ptr->sc.exp_data_transfer_len = cpu_to_be32(buffer_len);
 	memcpy(ucd_req_ptr->sc.cdb, cdb, sizeof(struct scsi_cdb));
 }
@@ -443,8 +453,8 @@ static int ufs_pixel_fips_send_utrd(struct ufs_hba *hba,
 
 static int ufs_pixel_fips_check_response(struct utp_upiu_rsp *resp, u8 ocs)
 {
-	u8 status = be32_to_cpu(resp->header.dword_1);
-	u8 response = be32_to_cpu(resp->header.dword_1) >> 8;
+	u8 status = be32_to_cpu(FIPS_UPIU_HDR(resp->header)[1]);
+	u8 response = be32_to_cpu(FIPS_UPIU_HDR(resp->header)[1]) >> 8;
 	if (ocs || status || response) {
 		uint8_t response_code = resp->sr.sense_data[0] & 0x7F;
 		if (response_code == 0x70) {
@@ -517,7 +527,7 @@ int ufs_pixel_fips_send_request(struct ufs_hba *hba, struct scsi_cdb *cdb,
 	if (ret)
 		return ret;
 
-	ocs = le32_to_cpu(utrd.header.dword_2) & 0xFF;
+	ocs = le32_to_cpu(FIPS_UTRD_HDR(utrd.header)[2]) & 0xFF;
 
 	return ufs_pixel_fips_check_response(resp_upiu, ocs);
 }
