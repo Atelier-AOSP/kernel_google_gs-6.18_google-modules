@@ -2064,7 +2064,7 @@ static int s3c64xx_spi_resume_operation(struct device *dev)
 
 static int s3c64xx_spi_suspend(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
+	struct spi_controller *master = dev_get_drvdata(dev);
 	struct s3c64xx_spi_driver_data *sdd = spi_controller_get_devdata(master);
 	struct s3c64xx_spi_info *sci = sdd->cntrlr_info;
 
@@ -2075,7 +2075,7 @@ static int s3c64xx_spi_suspend(struct device *dev)
 
 static int s3c64xx_spi_resume(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
+	struct spi_controller *master = dev_get_drvdata(dev);
 	struct s3c64xx_spi_driver_data *sdd = spi_controller_get_devdata(master);
 	struct s3c64xx_spi_info *sci = sdd->cntrlr_info;
 

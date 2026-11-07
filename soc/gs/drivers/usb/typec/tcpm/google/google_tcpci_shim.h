@@ -67,6 +67,11 @@
 #define TCPC_ROLE_CTRL_CC2_MASK		0x3
 #define TCPC_ROLE_CTRL_CC1_SHIFT	0
 #define TCPC_ROLE_CTRL_CC1_MASK		0x3
+/* GENMASK forms used with FIELD_PREP() (as in upstream <linux/usb/tcpci.h>) */
+#ifndef TCPC_ROLE_CTRL_CC1
+#define TCPC_ROLE_CTRL_CC1		GENMASK(1, 0)
+#define TCPC_ROLE_CTRL_CC2		GENMASK(3, 2)
+#endif
 #define TCPC_ROLE_CTRL_CC_RA		0x0
 #define TCPC_ROLE_CTRL_CC_RP		0x1
 #define TCPC_ROLE_CTRL_CC_RD		0x2

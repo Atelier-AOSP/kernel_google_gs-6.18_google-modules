@@ -532,9 +532,15 @@ static int exynos_cpuhp_probe(struct platform_device *pdev)
 		pr_err("Failed to create sysfs for CPUHP\n");
 
 	/* Link CPUHP sysfs to /sys/devices/system/cpu/cpuhp */
-	if (sysfs_create_link(&cpu_subsys.dev_root->kobj,
-			      &pdev->dev.kobj, "cpuhp"))
-		pr_err("Failed to link CPUHP sysfs to cpuctrl\n");
+	{
+		/* bus_type::dev_root was removed (v6.4); use bus_get_dev_root() */
+		struct device *cpu_root = bus_get_dev_root(&cpu_subsys);
+
+		if (!cpu_root || sysfs_create_link(&cpu_root->kobj,
+						   &pdev->dev.kobj, "cpuhp"))
+			pr_err("Failed to link CPUHP sysfs to cpuctrl\n");
+		put_device(cpu_root);
+	}
 
 	/* Register pm notifier */
 	register_pm_notifier(&exynos_cpuhp_nb);
