@@ -837,7 +837,7 @@ fail:
 	return ret;
 }
 
-static int s2mpg13_spmic_thermal_remove(struct platform_device *pdev)
+static void s2mpg13_spmic_thermal_remove(struct platform_device *pdev)
 {
 	int i;
 	struct s2mpg13_spmic_thermal_chip *chip = platform_get_drvdata(pdev);
@@ -860,8 +860,6 @@ static int s2mpg13_spmic_thermal_remove(struct platform_device *pdev)
 #endif
 	}
 	s2mpg13_spmic_thermal_unregister_tzd(chip);
-
-	return 0;
 }
 
 static struct platform_driver s2mpg13_spmic_thermal_driver = {

@@ -873,7 +873,7 @@ base_clk_err:
 
 }
 
-static int pwm_samsung_remove(struct platform_device *pdev)
+static void pwm_samsung_remove(struct platform_device *pdev)
 {
 	struct samsung_pwm_chip *chip = platform_get_drvdata(pdev);
 
@@ -881,8 +881,6 @@ static int pwm_samsung_remove(struct platform_device *pdev)
 
 	clk_unprepare(chip->pwm_sclk);
 	clk_unprepare(chip->pwm_pclk);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

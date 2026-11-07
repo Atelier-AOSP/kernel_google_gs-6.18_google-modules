@@ -420,9 +420,9 @@ static int etm2dram_probe(struct platform_device *pdev)
 	return etm2dram_set_databuf(data->dbuf_base, data->dbuf_size);
 }
 
-static int etm2dram_remove(struct platform_device *pdev)
+static void etm2dram_remove(struct platform_device *pdev)
 {
-	return etm2dram_set_databuf(0, 0);
+	etm2dram_set_databuf(0, 0);
 }
 
 static const struct of_device_id etm2dram_matches[] = {

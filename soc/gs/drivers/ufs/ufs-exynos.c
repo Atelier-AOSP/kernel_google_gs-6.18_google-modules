@@ -1750,7 +1750,7 @@ free_exynos_ufs:
 	return ret;
 }
 
-static int exynos_ufs_remove(struct platform_device *pdev)
+static void exynos_ufs_remove(struct platform_device *pdev)
 {
 	struct exynos_ufs *ufs = dev_get_platdata(&pdev->dev);
 	struct ufs_hba *hba =  platform_get_drvdata(pdev);
@@ -1766,8 +1766,6 @@ static int exynos_ufs_remove(struct platform_device *pdev)
 	exynos_pm_qos_remove_request(&ufs->pm_qos_int);
 
 	exynos_ufs_ctrl_phy_pwr(ufs, false);
-
-	return 0;
 }
 
 static void exynos_ufs_shutdown(struct platform_device *pdev)

@@ -1028,14 +1028,13 @@ static int s2mpg14_pmic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int s2mpg14_pmic_remove(struct platform_device *pdev)
+static void s2mpg14_pmic_remove(struct platform_device *pdev)
 {
 #if IS_ENABLED(CONFIG_DRV_SAMSUNG_PMIC)
 	struct s2mpg14_pmic *s2mpg14 = platform_get_drvdata(pdev);
 
 	pmic_device_destroy(s2mpg14->dev->devt);
 #endif
-	return 0;
 }
 
 static void s2mpg14_pmic_shutdown(struct platform_device *pdev)

@@ -1783,7 +1783,7 @@ static const struct iio_info odpm_iio_info = {
 	.write_raw = odpm_write_raw,
 };
 
-static int odpm_remove(struct platform_device *pdev)
+static void odpm_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(&pdev->dev);
 	struct odpm_info *info = iio_priv(indio_dev);

@@ -5698,9 +5698,8 @@ err_sensor:
 	return ret;
 }
 
-static int gs_tmu_remove(struct platform_device *pdev)
+static void gs_tmu_remove(struct platform_device *pdev)
 {
-	return -EBUSY;
 }
 
 #if IS_ENABLED(CONFIG_PM_SLEEP)
