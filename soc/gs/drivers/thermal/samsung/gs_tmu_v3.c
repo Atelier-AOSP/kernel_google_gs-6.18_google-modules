@@ -2636,13 +2636,11 @@ static ssize_t offset_enabled_store(struct device *dev,
 		dev_dbg(&pdev->dev, "trip_temp_%d change from %d to %d\n",
 			i, trip_temp, new_trip_temp);
 		/* ops take a trip pointer; also record the new value in the core (v6.12) */
-		ret = tz->ops->set_trip_temp(tz, &tz->trips[i].trip, new_trip_temp);
+		ret = tz->ops.set_trip_temp(tz, &tz->trips[i].trip, new_trip_temp);
 		if (!ret)
 			thermal_zone_set_trip_temp(tz, &tz->trips[i].trip, new_trip_temp);
 
-		// 6.1 moved set_trip_temp to sysfs, this is to address b/315931658
-		if (tz->trips)
-			tz->trips[i].temperature = new_trip_temp;
+		/* b/315931658: the core trip value is updated by thermal_zone_set_trip_temp() above */
 		if (ret) {
 			dev_err(&pdev->dev,
 				"Failed to set trip_temp_%d on %s\n",
@@ -5225,7 +5223,7 @@ static int gs_tmu_parse_ect(struct gs_tmu_data *data)
 			temperature = function->range_list[i].lower_bound_temperature;
 			freq = function->range_list[i].max_frequency;
 
-			if (!tz->ops->set_trip_temp(tz, &tz->trips[i].trip, temperature * MCELSIUS))
+			if (!tz->ops.set_trip_temp(tz, &tz->trips[i].trip, temperature * MCELSIUS))
 				thermal_zone_set_trip_temp(tz, &tz->trips[i].trip,
 							   temperature * MCELSIUS);
 
@@ -5290,7 +5288,7 @@ static int gs_tmu_parse_ect(struct gs_tmu_data *data)
 		for (i = 0; i < pidtm_block->num_of_temperature; ++i) {
 			temperature = pidtm_block->temperature_list[i];
 
-			if (!tz->ops->set_trip_temp(tz, &tz->trips[i].trip, temperature * MCELSIUS))
+			if (!tz->ops.set_trip_temp(tz, &tz->trips[i].trip, temperature * MCELSIUS))
 				thermal_zone_set_trip_temp(tz, &tz->trips[i].trip,
 							   temperature * MCELSIUS);
 
@@ -5369,7 +5367,9 @@ static int gs_tmu_parse_ect(struct gs_tmu_data *data)
 		if (value != -1) {
 			pr_info("Parse from ECT limited_threshold: %d\n", value);
 			limited_threshold = value * MCELSIUS;
-			tz->ops->set_trip_temp(tz, 3, temperature  * MCELSIUS);
+			if (!tz->ops.set_trip_temp(tz, &tz->trips[3].trip, temperature * MCELSIUS))
+				thermal_zone_set_trip_temp(tz, &tz->trips[3].trip,
+							   temperature * MCELSIUS);
 			data->limited_threshold = value;
 		}
 

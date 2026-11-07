@@ -1482,9 +1482,15 @@ static int exynos_cpupm_probe(struct platform_device *pdev)
 		pr_warn("Failed to create sysfs for CPUPM\n");
 
 	/* Link CPUPM sysfs to /sys/devices/system/cpu/cpupm */
-	if (sysfs_create_link(&cpu_subsys.dev_root->kobj,
-			      &pdev->dev.kobj, "cpupm"))
-		pr_err("Failed to link CPUPM sysfs to cpu\n");
+	{
+		/* bus_type::dev_root was removed (v6.4); use bus_get_dev_root() */
+		struct device *cpu_root = bus_get_dev_root(&cpu_subsys);
+
+		if (!cpu_root || sysfs_create_link(&cpu_root->kobj,
+						   &pdev->dev.kobj, "cpupm"))
+			pr_err("Failed to link CPUPM sysfs to cpu\n");
+		put_device(cpu_root);
+	}
 
 	ret = exynos_cpuidle_state_init();
 	if (ret)

@@ -350,20 +350,18 @@ s2mpg13_spmic_thermal_set_hot_trip(struct s2mpg13_spmic_thermal_sensor *s, int t
  * Set temperature threshold for given tz, only critical threshold will be
  * programmed as shutdown threshold.
  */
-static int s2mpg13_spmic_thermal_set_trip_temp(struct thermal_zone_device *tz, int trip, int temp)
+/* v6.12: .set_trip_temp gets the trip itself; of_thermal_* helpers are gone */
+static int s2mpg13_spmic_thermal_set_trip_temp(struct thermal_zone_device *tz,
+					       const struct thermal_trip *trip,
+					       int temp)
 {
 	struct s2mpg13_spmic_thermal_sensor *s = thermal_zone_device_priv(tz);
-	const struct thermal_trip *trip_points;
 	int ret = 0;
 
 	if (!s->chip->sensors_ready)
 		return -EAGAIN;
 
-	trip_points = of_thermal_get_trip_points(s->tzd);
-	if (!trip_points)
-		return -EINVAL;
-
-	if (trip_points[trip].type != THERMAL_TRIP_HOT)
+	if (trip->type != THERMAL_TRIP_HOT)
 		return ret;
 
 	/* Use THERMAL_TRIP_HOT for HW thermal shutdown */
@@ -438,26 +436,25 @@ tz_temp_show(struct device *dev, struct device_attribute *attr, char *buf)
 
 static DEVICE_ATTR_RO(tz_temp);
 
+static int s2mpg13_spmic_hot_trip_cb(struct thermal_trip *trip, void *arg)
+{
+	int *hot = arg;
+
+	if (trip->type == THERMAL_TRIP_HOT && trip->temperature != THERMAL_TEMP_INVALID) {
+		*hot = trip->temperature;
+		return 1;	/* stop walking */
+	}
+	return 0;
+}
+
 static int s2mpg13_spmic_thermal_get_hot_temp(struct thermal_zone_device *tzd)
 {
-	int ntrips;
-	const struct thermal_trip *trips;
-	int i;
+	int hot = THERMAL_TEMP_INVALID;
 
-	ntrips = of_thermal_get_ntrips(tzd);
-	if (ntrips <= 0)
-		return THERMAL_TEMP_INVALID;
+	/* of_thermal_get_{ntrips,trip_points}() / of_thermal_is_trip_valid() are gone */
+	thermal_zone_for_each_trip(tzd, s2mpg13_spmic_hot_trip_cb, &hot);
 
-	trips = of_thermal_get_trip_points(tzd);
-	if (!trips)
-		return THERMAL_TEMP_INVALID;
-
-	for (i = 0; i < ntrips; i++) {
-		if (of_thermal_is_trip_valid(tzd, i) && trips[i].type == THERMAL_TRIP_HOT)
-			return trips[i].temperature;
-	}
-
-	return THERMAL_TEMP_INVALID;
+	return hot;
 }
 
 /*
