@@ -21,6 +21,7 @@
 #include <drm/exynos_drm.h>
 
 #include <linux/atomic.h>
+#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/console.h>
@@ -2404,9 +2405,6 @@ static int decon_parse_dt(struct decon_device *decon, struct device_node *np)
 		decon_debug(decon, "can't find rcd structure\n");
 	else
 		decon_debug(decon, "found rcd: dpp%d\n", decon->rcd->id);
-
-	if (dpp_np)
-		of_node_put(dpp_np);
 
 	of_property_for_each_u32(np, "connector", val)
 		decon->con_type |= val;
