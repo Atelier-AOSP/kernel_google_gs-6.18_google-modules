@@ -5415,7 +5415,7 @@ probe_fail:
 	return ret;
 }
 
-static void __exit exynos_pcie_rc_remove(struct platform_device *pdev)
+static void exynos_pcie_rc_remove(struct platform_device *pdev)	/* not __exit: referenced from .data (v6.11 modpost) */
 {
 	struct device *dev = &pdev->dev;
 	struct dw_pcie *pci = container_of(&dev, struct dw_pcie, dev);
