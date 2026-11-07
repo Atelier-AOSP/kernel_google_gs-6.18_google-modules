@@ -477,7 +477,7 @@ err_drvdata_add:
 	return ret;
 }
 
-static void samsung_sysmmu_detach_dev(struct iommu_domain *dom,
+static void __maybe_unused samsung_sysmmu_detach_dev(struct iommu_domain *dom,
 				      struct device *dev)
 {
 	struct sysmmu_clientdata *client;
@@ -628,9 +628,13 @@ static int lv2set_page(sysmmu_pte_t *pent, phys_addr_t paddr,
 	return 0;
 }
 
+/*
+ * Used as iommu_domain_ops::map_pages (::map was removed in v6.x). Maps a
+ * single page of @size; the IOMMU core loops over @count via @mapped.
+ */
 static int samsung_sysmmu_map(struct iommu_domain *dom, unsigned long l_iova,
-			      phys_addr_t paddr, size_t size, int prot,
-			      gfp_t gfp)
+			      phys_addr_t paddr, size_t size, size_t count,
+			      int prot, gfp_t gfp, size_t *mapped)
 {
 	struct samsung_sysmmu_domain *domain = to_sysmmu_domain(dom);
 	sysmmu_iova_t iova = (sysmmu_iova_t)l_iova;
@@ -660,11 +664,13 @@ static int samsung_sysmmu_map(struct iommu_domain *dom, unsigned long l_iova,
 
 	if (ret)
 		pr_err("failed to map %#zx @ %#x, ret:%d\n", size, iova, ret);
+	else
+		*mapped = size;
 
 	return ret;
 }
 
-static size_t samsung_sysmmu_unmap(struct iommu_domain *dom,
+static size_t __maybe_unused samsung_sysmmu_unmap(struct iommu_domain *dom,
 				   unsigned long l_iova, size_t size,
 				   struct iommu_iotlb_gather *gather)
 {
@@ -947,7 +953,8 @@ static void samsung_sysmmu_release_device(struct device *dev)
 	struct sysmmu_clientdata *client;
 	unsigned int i;
 
-	if (!fwspec || fwspec->ops != &samsung_sysmmu_ops)
+	/* iommu_fwspec::ops is gone (v6.11); the core only calls us for our devices */
+	if (!fwspec)
 		return;
 
 	client = (struct sysmmu_clientdata *) dev_iommu_priv_get(dev);
@@ -1308,10 +1315,8 @@ static struct iommu_ops samsung_sysmmu_ops = {
 	.owner						= THIS_MODULE,
 	.default_domain_ops	= &(const struct iommu_domain_ops) {
 		.attach_dev		= samsung_sysmmu_attach_dev,
-		.detach_dev		= samsung_sysmmu_detach_dev,
 		.set_dev_pasid		= samsung_sysmmu_set_dev_pasid,
-		.map			= samsung_sysmmu_map,
-		.unmap			= samsung_sysmmu_unmap,
+		.map_pages		= samsung_sysmmu_map,
 		.unmap_pages		= samsung_sysmmu_unmap_pages,
 		.flush_iotlb_all	= samsung_sysmmu_flush_iotlb_all,
 		.iotlb_sync_map		= samsung_sysmmu_iotlb_sync_map,
