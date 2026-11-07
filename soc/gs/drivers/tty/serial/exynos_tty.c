@@ -1346,9 +1346,9 @@ static irqreturn_t exynos_serial_tx_chars(int irq, void *id)
 {
 	struct exynos_uart_port *ourport = id;
 	struct uart_port *port = &ourport->port;
-	struct circ_buf *xmit = &port->state->xmit;
+	struct tty_port *tport = &port->state->port;	/* circ_buf -> kfifo (v6.10) */
 	unsigned long flags;
-	int count = port->fifosize, dma_count = 0;
+	unsigned int count, dma_count = 0, tail;
 	unsigned char trace_buf[256] = {0, };
 	int trace_cnt = 0;
 	char buf[DATA_BYTES_PER_LINE * 3 + 1];
@@ -1396,30 +1396,32 @@ static irqreturn_t exynos_serial_tx_chars(int irq, void *id)
 		dma_count = 0;
 	}
 
-	while (!uart_circ_empty(xmit) && count-- > 0) {
-		if (rd_regl(port, S3C2410_UFSTAT) & ourport->info->tx_fifofull)
+	while (!(rd_regl(port, S3C2410_UFSTAT) & ourport->info->tx_fifofull)
+	       && count > 0) {
+		unsigned char ch;
+
+		/* uart_fifo_get() also accounts port->icount.tx */
+		if (!uart_fifo_get(port, &ch))
 			break;
 
-		wr_reg(port, S3C2410_UTXH, xmit->buf[xmit->tail]);
+		wr_reg(port, S3C2410_UTXH, ch);
 		if (ourport->uart_logging)
-			trace_buf[trace_cnt++] = (unsigned
-						  char)xmit->buf[xmit->tail];
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		port->icount.tx++;
+			trace_buf[trace_cnt++] = ch;
+		count--;
 	}
 
 	if (!count && dma_count) {
-		exynos_serial_start_tx_dma(ourport, dma_count);
+		exynos_serial_start_tx_dma(ourport, dma_count, tail);
 		goto out;
 	}
 
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS) {
+	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS) {
 		uart_port_unlock_irqrestore(port, flags);
 		uart_write_wakeup(port);
 		uart_port_lock_irqsave(port, &flags);
 	}
 
-	if (uart_circ_empty(xmit))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		exynos_serial_stop_tx(port);
 
 out:
@@ -2082,12 +2084,7 @@ static void exynos_serial_set_termios(struct uart_port *port,
 static const char *exynos_serial_type(struct uart_port *port)
 {
 	switch (port->type) {
-	case PORT_S3C2410:
-		return "S3C2410";
-	case PORT_S3C2440:
-		return "S3C2440";
-	case PORT_S3C2412:
-		return "S3C2412";
+	/* PORT_S3C24xx ids were removed from serial_core.h (v6.x) */
 	case PORT_S3C6400:
 		return "S3C6400/10";
 	default:
