@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of_gpio.h>
+#include <linux/platform_device.h>
 #include <linux/of_graph.h>
 #include <linux/of_platform.h>
 #include <linux/version.h>
