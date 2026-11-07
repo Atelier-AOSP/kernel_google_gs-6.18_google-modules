@@ -600,7 +600,7 @@ static int gcip_pin_user_pages(struct device *dev, struct page **pages, unsigned
 		mutex_lock(pin_user_pages_lock);
 	mmap_read_lock(current->mm);
 
-	ret = pin_user_pages(start_addr, num_pages, gup_flags, pages, vmas);
+	ret = pin_user_pages(start_addr, num_pages, gup_flags, pages);	/* vmas arg removed (v6.5) */
 
 	mmap_read_unlock(current->mm);
 	if (pin_user_pages_lock)
@@ -758,7 +758,8 @@ static int _gcip_iommu_domain_pool_attach_domain(struct gcip_iommu_domain_pool *
 	if (pasid < 0)
 		return pasid;
 
-	ret = iommu_attach_device_pasid(domain->domain, pool->dev, pasid);
+	/* v6.10+: optional attach handle (NULL: none) */
+	ret = iommu_attach_device_pasid(domain->domain, pool->dev, pasid, NULL);
 	if (ret) {
 		ida_free(&pool->pasid_pool, pasid);
 		return ret;
