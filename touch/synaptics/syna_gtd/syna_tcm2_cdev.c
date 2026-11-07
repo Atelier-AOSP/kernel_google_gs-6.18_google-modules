@@ -2100,7 +2100,7 @@ exit:
  * @return
  *    the string of devtmpfs
  */
-static char *syna_cdev_devnode(struct device *dev, umode_t *mode)
+static char *syna_cdev_devnode(const struct device *dev, umode_t *mode)
 {
 	if (!mode)
 		return NULL;
