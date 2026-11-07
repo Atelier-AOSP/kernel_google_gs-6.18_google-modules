@@ -43,6 +43,31 @@
 #include <max77779.h>
 #include <max777x9_bcl.h>
 
+/*
+ * struct thermal_zone_device is private to the thermal core since v6.x; update
+ * the first trip through the trip walker, which holds tz->lock as
+ * thermal_zone_set_trip_temp() requires.
+ */
+struct bcl_trip0_arg {
+	struct thermal_zone_device *tz;
+	int temp;
+};
+
+static int bcl_set_trip0_cb(struct thermal_trip *trip, void *arg)
+{
+	struct bcl_trip0_arg *a = arg;
+
+	thermal_zone_set_trip_temp(a->tz, trip, a->temp);
+	return 1;	/* first trip only */
+}
+
+static void bcl_set_trip0_temp(struct thermal_zone_device *tz, int temp)
+{
+	struct bcl_trip0_arg a = { .tz = tz, .temp = temp };
+
+	thermal_zone_for_each_trip(tz, bcl_set_trip0_cb, &a);
+}
+
 const unsigned int clk_stats_offset[] = {
 	CPUCL0_CLKDIVSTEP_STAT,
 	CLKDIVSTEP_STAT,
@@ -1281,7 +1306,7 @@ static ssize_t uvlo1_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[UVLO1]->bcl_lvl = VD_BATTERY_VOLTAGE - value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[UVLO1]->tz) {
-		bcl_dev->zone[UVLO1]->tz->trips[0].trip.temperature = VD_BATTERY_VOLTAGE - value;
+		bcl_set_trip0_temp(bcl_dev->zone[UVLO1]->tz, VD_BATTERY_VOLTAGE - value);
 		thermal_zone_device_update(bcl_dev->zone[UVLO1]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1347,7 +1372,7 @@ static ssize_t uvlo2_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[UVLO2]->bcl_lvl = VD_BATTERY_VOLTAGE - value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[UVLO2]->tz) {
-		bcl_dev->zone[UVLO2]->tz->trips[0].trip.temperature = VD_BATTERY_VOLTAGE - value;
+		bcl_set_trip0_temp(bcl_dev->zone[UVLO2]->tz, VD_BATTERY_VOLTAGE - value);
 		thermal_zone_device_update(bcl_dev->zone[UVLO2]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1463,7 +1488,7 @@ static ssize_t batoilo_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[BATOILO1]->bcl_lvl = value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[BATOILO1]->tz) {
-		bcl_dev->zone[BATOILO1]->tz->trips[0].trip.temperature = value;
+		bcl_set_trip0_temp(bcl_dev->zone[BATOILO1]->tz, value);
 		thermal_zone_device_update(bcl_dev->zone[BATOILO1]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1519,7 +1544,7 @@ static ssize_t batoilo2_lvl_store(struct device *dev,
 		return ret;
 	bcl_dev->zone[BATOILO2]->bcl_lvl = value - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[BATOILO2]->tz) {
-		bcl_dev->zone[BATOILO2]->tz->trips[0].trip.temperature = value;
+		bcl_set_trip0_temp(bcl_dev->zone[BATOILO2]->tz, value);
 		thermal_zone_device_update(bcl_dev->zone[BATOILO2]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	return size;
@@ -1589,7 +1614,7 @@ static ssize_t smpl_lvl_store(struct device *dev,
 	bcl_dev->zone[SMPL_WARN]->bcl_lvl = SMPL_BATTERY_VOLTAGE - val - THERMAL_HYST_LEVEL;
 
 	if (bcl_dev->zone[SMPL_WARN]->tz) {
-		bcl_dev->zone[SMPL_WARN]->tz->trips[0].trip.temperature = SMPL_BATTERY_VOLTAGE - val;
+		bcl_set_trip0_temp(bcl_dev->zone[SMPL_WARN]->tz, SMPL_BATTERY_VOLTAGE - val);
 		thermal_zone_device_update(bcl_dev->zone[SMPL_WARN]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	irq_safe_config_extended(bcl_dev->zone[SMPL_WARN], false /* disabled */,
@@ -1647,7 +1672,7 @@ static int set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 addr, u8 pmic, u8
 	if (!ret)
 		bcl_dev->zone[id]->bcl_lvl = val - THERMAL_HYST_LEVEL;
 	if (bcl_dev->zone[id]->tz) {
-		bcl_dev->zone[id]->tz->trips[0].trip.temperature = val;
+		bcl_set_trip0_temp(bcl_dev->zone[id]->tz, val);
 		thermal_zone_device_update(bcl_dev->zone[id]->tz, THERMAL_EVENT_UNSPECIFIED);
 	}
 	irq_safe_config_extended(bcl_dev->zone[id], false /* disabled */,

@@ -8,6 +8,8 @@
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
 
+#include <linux/gpio/consumer.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/atomic.h>
 #include <linux/cleanup.h>
 #include <linux/completion.h>
@@ -1120,10 +1122,10 @@ static int google_bcl_register_zones_sub(struct bcl_device *bcl_dev, void *pdata
 #endif
 
 	ret = google_bcl_register_zone(bcl_dev, OCP_WARN_GPU, "ocp_gpu",
-				       pdata->b2_ocp_warn_pin,
+				       desc_to_gpio(pdata->b2_ocp_warn_pin),
 				       GPU_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (pdata->b2_ocp_warn_lvl * GPU_STEP),
-				       gpio_to_irq(pdata->b2_ocp_warn_pin),
+				       gpio_to_irq(desc_to_gpio(pdata->b2_ocp_warn_pin)),
 				       CORE_SUB_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: GPU\n");
@@ -1132,10 +1134,10 @@ static int google_bcl_register_zones_sub(struct bcl_device *bcl_dev, void *pdata
 	if (IS_ENABLED(CONFIG_SOC_ZUMAPRO))
 		return 0;
 	ret = google_bcl_register_zone(bcl_dev, SOFT_OCP_WARN_GPU, "soft_ocp_gpu",
-				       pdata->b2_soft_ocp_warn_pin,
+				       desc_to_gpio(pdata->b2_soft_ocp_warn_pin),
 				       GPU_UPPER_LIMIT - THERMAL_HYST_LEVEL -
 				       (pdata->b2_soft_ocp_warn_lvl * GPU_STEP),
-				       gpio_to_irq(pdata->b2_soft_ocp_warn_pin),
+				       gpio_to_irq(desc_to_gpio(pdata->b2_soft_ocp_warn_pin)),
 				       CORE_SUB_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SOFT_GPU\n");
@@ -1758,31 +1760,31 @@ static int google_bcl_register_zones_main(struct bcl_device *bcl_dev, void *pdat
 	struct s2mpg10_platform_data *pdata = pdata_main;
 #endif
 
-	ocp_cpu2_pin = pdata->b2_ocp_warn_pin;
+	ocp_cpu2_pin = desc_to_gpio(pdata->b2_ocp_warn_pin);
 	ocp_cpu2_lvl = pdata->b2_ocp_warn_lvl;
-	ocp_cpu1_pin = pdata->b3_ocp_warn_pin;
+	ocp_cpu1_pin = desc_to_gpio(pdata->b3_ocp_warn_pin);
 	ocp_cpu1_lvl = pdata->b3_ocp_warn_lvl;
-	soft_ocp_cpu2_pin = pdata->b2_soft_ocp_warn_pin;
+	soft_ocp_cpu2_pin = desc_to_gpio(pdata->b2_soft_ocp_warn_pin);
 	soft_ocp_cpu2_lvl = pdata->b2_soft_ocp_warn_lvl;
-	soft_ocp_cpu1_pin = pdata->b3_soft_ocp_warn_pin;
+	soft_ocp_cpu1_pin = desc_to_gpio(pdata->b3_soft_ocp_warn_pin);
 	soft_ocp_cpu1_lvl = pdata->b3_soft_ocp_warn_lvl;
 
 #if IS_ENABLED(CONFIG_REGULATOR_S2MPG14)
-	ocp_tpu_pin = pdata->b7_ocp_warn_pin;
+	ocp_tpu_pin = desc_to_gpio(pdata->b7_ocp_warn_pin);
 	ocp_tpu_lvl = pdata->b7_ocp_warn_lvl;
-	soft_ocp_tpu_pin = pdata->b7_soft_ocp_warn_pin;
+	soft_ocp_tpu_pin = desc_to_gpio(pdata->b7_soft_ocp_warn_pin);
 	soft_ocp_tpu_lvl = pdata->b7_soft_ocp_warn_lvl;
 #elif IS_ENABLED(CONFIG_REGULATOR_S2MPG12) || IS_ENABLED(CONFIG_REGULATOR_S2MPG10)
-	ocp_tpu_pin = pdata->b10_ocp_warn_pin;
+	ocp_tpu_pin = desc_to_gpio(pdata->b10_ocp_warn_pin);
 	ocp_tpu_lvl = pdata->b10_ocp_warn_lvl;
-	soft_ocp_tpu_pin = pdata->b10_soft_ocp_warn_pin;
+	soft_ocp_tpu_pin = desc_to_gpio(pdata->b10_soft_ocp_warn_pin);
 	soft_ocp_tpu_lvl = pdata->b10_soft_ocp_warn_lvl;
 #endif
 
 	ret = google_bcl_register_zone(bcl_dev, SMPL_WARN, SMPL_ZONE_NAME,
-				       pdata->smpl_warn_pin, SMPL_BATTERY_VOLTAGE -
+				       desc_to_gpio(pdata->smpl_warn_pin), SMPL_BATTERY_VOLTAGE -
 				       (pdata->smpl_warn_lvl * SMPL_STEP + SMPL_LOWER_LIMIT),
-				       gpio_to_irq(pdata->smpl_warn_pin), CORE_MAIN_PMIC);
+				       gpio_to_irq(desc_to_gpio(pdata->smpl_warn_pin)), CORE_MAIN_PMIC);
 	if (ret < 0) {
 		dev_err(bcl_dev->device, "bcl_register fail: SMPL_WARN\n");
 		return -ENODEV;
@@ -2258,8 +2260,8 @@ static void google_bcl_parse_clk_div_dtree(struct bcl_device *bcl_dev)
 	bcl_dev->core_conf[SUBSYSTEM_CPU1].clkdivstep = ret ? 0 : val;
 	ret = of_property_read_u32(np, "cpu0_clkdivstep", &val);
 	bcl_dev->core_conf[SUBSYSTEM_CPU0].clkdivstep = ret ? 0 : val;
-	bcl_dev->vdroop1_pin = of_get_gpio(np, 0);
-	bcl_dev->vdroop2_pin = of_get_gpio(np, 1);
+	bcl_dev->vdroop1_pin = of_get_named_gpio(np, "gpios", 0);
+	bcl_dev->vdroop2_pin = of_get_named_gpio(np, "gpios", 1);
 	bcl_dev->modem_gpio1_pin = of_get_gpio(np, 2);
 	bcl_dev->modem_gpio2_pin = of_get_gpio(np, 3);
 	ret = of_property_read_u32(np, "rffe_channel", &val);
