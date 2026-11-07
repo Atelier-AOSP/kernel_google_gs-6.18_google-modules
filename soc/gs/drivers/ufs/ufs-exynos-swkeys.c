@@ -12,7 +12,7 @@
  * (also called the traditional FMP mode or legacy FMP mode).
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <crypto/aes.h>
 #include <crypto/algapi.h>
 #include <linux/soc/samsung/exynos-smc.h>
