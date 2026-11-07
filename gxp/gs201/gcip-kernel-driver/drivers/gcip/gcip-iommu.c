@@ -140,7 +140,7 @@ static unsigned int gcip_iommu_domain_map_sg(struct gcip_iommu_domain *domain,
 #if GCIP_IOMMU_MAP_HAS_GFP
 	map_size = iommu_map_sg(domain->domain, iova, sgl, nents, prot, GFP_KERNEL);
 #else
-	map_size = iommu_map_sg(domain->domain, iova, sgl, nents, prot);
+	map_size = iommu_map_sg(domain->domain, iova, sgl, nents, prot, GFP_KERNEL);
 #endif
 	if (map_size < 0 || map_size < iova_len)
 		goto err_free_iova;

@@ -477,7 +477,7 @@ void edgetpu_group_notify(struct edgetpu_device_group *group, uint event_id)
 		  group->workload_id, event_id);
 	read_lock(&group->events.lock);
 	if (group->events.eventfds[event_id])
-		eventfd_signal(group->events.eventfds[event_id], 1);
+		eventfd_signal(group->events.eventfds[event_id]);
 	read_unlock(&group->events.lock);
 }
 
@@ -1239,13 +1239,12 @@ static struct page **edgetpu_pin_user_pages(struct edgetpu_device_group *group,
 			lru_cache_disable();
 
 		mmap_read_lock(current->mm);
-		ret = pin_user_pages(host_addr & PAGE_MASK, num_pages, foll_flags, pages, vmas);
+		ret = pin_user_pages(host_addr & PAGE_MASK, num_pages, foll_flags, pages);	/* vmas arg removed (v6.5) */
 
 		if (ret == -EFAULT && !*preadonly) {
 			foll_flags &= ~FOLL_WRITE;
 			*preadonly = true;
-			ret = pin_user_pages(host_addr & PAGE_MASK, num_pages, foll_flags, pages,
-					     vmas);
+			ret = pin_user_pages(host_addr & PAGE_MASK, num_pages, foll_flags, pages);
 		}
 		mmap_read_unlock(current->mm);
 

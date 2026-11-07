@@ -331,7 +331,7 @@ int edgetpu_mmu_map(struct edgetpu_dev *etdev, struct edgetpu_mapping *map,
 	 */
 	if (params.domain != default_domain) {
 		ssize_t mapped = (ssize_t)iommu_map_sg(params.domain, iova, map->sgt.sgl,
-						       map->sgt.orig_nents, params.prot);
+						       map->sgt.orig_nents, params.prot, GFP_KERNEL);
 
 		/* iommu_map_sg returns 0 on failure before 5.15, returns -errno afterwards */
 		if (mapped <= 0) {
