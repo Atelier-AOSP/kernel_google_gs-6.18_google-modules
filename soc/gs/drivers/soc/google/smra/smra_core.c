@@ -37,12 +37,12 @@ static inline void fault_around_disable(void)
 	 * From should_fault_around() in mm/memory.c, setting @fault_aroud_bytes
 	 * to PAGE_SIZE will disable fault around.
 	 */
-	*origin_fault_around_bytes_ptr = PAGE_SIZE;
+	*origin_fault_around_bytes_ptr = 1;
 }
 
 static inline void fault_around_enable(void)
 {
-	if (unlikely(*origin_fault_around_bytes_ptr != PAGE_SIZE))
+	if (unlikely(*origin_fault_around_bytes_ptr != 1))
 		pr_warn("fault_around_bytes is modified to %lu by other program"
 			", now smra overwrites it to %lu",
 			*origin_fault_around_bytes_ptr,
@@ -401,9 +401,15 @@ static struct smra_target *find_target(pid_t pid)
 	return NULL;
 }
 
-static void rvh_do_read_fault(void *data, struct file *file, pgoff_t pgoff,
+/*
+ * v6.12: the hook receives the vm_fault and fault_around_pages (in pages, not
+ * bytes); "no fault-around" is therefore 1 page instead of PAGE_SIZE bytes.
+ */
+static void rvh_do_read_fault(void *data, struct vm_fault *vmf,
 			      unsigned long *fault_around_bytes)
 {
+	struct file *file = vmf->vma->vm_file;
+	pgoff_t pgoff = vmf->pgoff;
 	int cur;
 	pid_t tgid;
 	struct smra_target *target;
