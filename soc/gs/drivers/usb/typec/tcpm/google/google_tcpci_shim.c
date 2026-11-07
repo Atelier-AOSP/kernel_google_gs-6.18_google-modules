@@ -312,10 +312,12 @@ static int google_tcpci_shim_enable_auto_vbus_discharge(struct tcpc_dev *dev, bo
 	return ret;
 }
 
+/* v6.x: TCPM also passes the PPS APDO minimum voltage (unused here) */
 static int google_tcpci_shim_set_auto_vbus_discharge_threshold(struct tcpc_dev *dev,
 							       enum typec_pwr_opmode mode,
 							       bool pps_active,
-							       u32 requested_vbus_voltage_mv)
+							       u32 requested_vbus_voltage_mv,
+							       u32 pps_apdo_min_voltage)
 {
 	struct google_shim_tcpci *tcpci = tcpc_to_tcpci(dev);
 	unsigned int pwr_ctrl, threshold = 0;
@@ -688,7 +690,7 @@ irqreturn_t google_tcpci_shim_irq(struct google_shim_tcpci *tcpci)
 		/* Read complete, clear RX status alert bit */
 		google_tcpci_shim_write16(tcpci, TCPC_ALERT, TCPC_ALERT_RX_STATUS);
 
-		tcpm_pd_receive(tcpci->port, &msg);
+		tcpm_pd_receive(tcpci->port, &msg, TCPC_TX_SOP);
 	}
 
 	if (tcpci->data->vbus_vsafe0v && (status & TCPC_ALERT_EXTENDED_STATUS)) {

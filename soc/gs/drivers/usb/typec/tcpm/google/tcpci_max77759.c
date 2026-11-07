@@ -219,7 +219,33 @@ void *orientation_payload;
 static void max77759_get_cc(struct max77759_plat *chip, enum typec_cc_status *cc1,
 			    enum typec_cc_status *cc2);
 
+/*
+ * of_get_named_gpio_flags() was removed (v6.x). Equivalent for the standard
+ * two-cell GPIO specifier: bit 0 of the flags cell is GPIO_ACTIVE_LOW.
+ */
+static int max77759_of_get_named_gpio(struct device_node *np, const char *name,
+				      int idx, bool *active_low)
+{
+	struct of_phandle_args args;
+
+	*active_low = false;
+	if (!of_parse_phandle_with_args(np, name, "#gpio-cells", idx, &args)) {
+		*active_low = args.args_count >= 2 && (args.args[1] & 1);
+		of_node_put(args.np);
+	}
+	return of_get_named_gpio(np, name, idx);
+}
+
 static bool hooks_installed;
+
+/*
+ * android16-6.12 GKI only keeps android_vh_typec_tcpm_log. The TCPM get_timer,
+ * store_partner_src_caps and modify_src_caps vendor hooks are gone, so the
+ * code using them is compiled out. Upstream TCPM (v6.10+) reads the
+ * sink-wait-cap/ps-source-off/cc-debounce timers from the connector DT node.
+ */
+#define TCPCI_MAX77759_LEGACY_TCPM_HOOKS 0
+
 
 struct dp_notification_event {
 	struct max77759_plat *chip;
@@ -795,9 +821,10 @@ static int ext_bst_en_gpio_init(struct max77759_plat *chip)
 	chip->gpio.base = -1;
 	chip->gpio.ngpio = 1;
 	chip->gpio.can_sleep = true;
-	chip->gpio.of_node = of_find_node_by_name(chip->dev->of_node, chip->gpio.label);
+	chip->gpio.fwnode = of_fwnode_handle(of_find_node_by_name(chip->dev->of_node,
+								    chip->gpio.label));
 
-	if (!chip->gpio.of_node)
+	if (!chip->gpio.fwnode)
 		dev_err(chip->dev, "Failed to find %s DT node\n", chip->gpio.label);
 
 	ret = devm_gpiochip_add_data(chip->dev, &chip->gpio, chip);
@@ -904,7 +931,7 @@ static int post_process_pd_message(struct max77759_plat *chip, struct pd_message
 {
 	enum pd_ctrl_msg_type pd_type = pd_header_type_le(msg.header);
 
-	if (pd_type == PD_DATA_VENDOR_DEF) {
+	if ((int)pd_type == (int)PD_DATA_VENDOR_DEF) {
 		u32 payload[2];
 		int i;
 
@@ -1012,7 +1039,7 @@ static int process_rx(struct max77759_plat *chip, u16 status)
 			return -EIO;
 	}
 
-	tcpm_pd_receive(chip->port, &msg);
+	tcpm_pd_receive(chip->port, &msg, TCPC_TX_SOP);
 
 	ret = post_process_pd_message(chip, msg);
 	if (ret < 0)
@@ -2833,6 +2860,7 @@ static int max77759_usb_set_role(struct usb_role_switch *sw, enum usb_role role)
 	return 0;
 }
 
+#if TCPCI_MAX77759_LEGACY_TCPM_HOOKS
 static void max77759_store_partner_src_caps(void *unused,
 					    unsigned int *nr_source_caps,
 					    u32 (*source_caps)[])
@@ -2849,6 +2877,8 @@ static void max77759_store_partner_src_caps(void *unused,
 
 	spin_unlock(&g_caps_lock);
 }
+#endif
+
 
 /*
  * Don't call this function in interrupt context. Caller needs to free the
@@ -3087,6 +3117,7 @@ static const struct file_operations force_device_mode_on_fops = {
 };
 #endif
 
+#if TCPCI_MAX77759_LEGACY_TCPM_HOOKS
 static void max77759_get_timer_value(void *unused, const char *state, enum typec_timer timer,
 				     unsigned int *val)
 {
@@ -3107,6 +3138,8 @@ static void max77759_get_timer_value(void *unused, const char *state, enum typec
 		break;
 	}
 }
+#endif
+
 
 static void max77759_tcpm_log(void *unused, const char *log, bool *bypass)
 {
@@ -3116,6 +3149,7 @@ static void max77759_tcpm_log(void *unused, const char *log, bool *bypass)
 	*bypass = true;
 }
 
+#if TCPCI_MAX77759_LEGACY_TCPM_HOOKS
 static void max77759_modify_src_caps(void *unused, unsigned int *nr_src_pdo,
 				     u32 (*src_pdo)[], bool *modified)
 {
@@ -3140,6 +3174,8 @@ static void max77759_modify_src_caps(void *unused, unsigned int *nr_src_pdo,
 
 	spin_unlock(&g_caps_lock);
 }
+#endif
+
 
 static int max77759_register_vendor_hooks(struct i2c_client *client)
 {
@@ -3148,6 +3184,7 @@ static int max77759_register_vendor_hooks(struct i2c_client *client)
 	if (hooks_installed)
 		return 0;
 
+#if TCPCI_MAX77759_LEGACY_TCPM_HOOKS
 	ret = register_trace_android_vh_typec_store_partner_src_caps(
 			max77759_store_partner_src_caps, NULL);
 	if (ret) {
@@ -3156,13 +3193,16 @@ static int max77759_register_vendor_hooks(struct i2c_client *client)
 			ret);
 		return ret;
 	}
+#endif
 
+#if TCPCI_MAX77759_LEGACY_TCPM_HOOKS
 	ret = register_trace_android_vh_typec_tcpm_get_timer(max77759_get_timer_value, NULL);
 	if (ret) {
 		dev_err(&client->dev,
 			"register_trace_android_vh_typec_tcpm_get_timer failed ret:%d\n", ret);
 		return ret;
 	}
+#endif
 
 	ret = register_trace_android_vh_typec_tcpm_log(max77759_tcpm_log, NULL);
 	if (ret) {
@@ -3171,6 +3211,7 @@ static int max77759_register_vendor_hooks(struct i2c_client *client)
 		return ret;
 	}
 
+#if TCPCI_MAX77759_LEGACY_TCPM_HOOKS
 	port_src_pdo_updated = true;
 	ret = register_trace_android_vh_typec_tcpm_modify_src_caps(max77759_modify_src_caps, NULL);
 	if (ret) {
@@ -3179,6 +3220,7 @@ static int max77759_register_vendor_hooks(struct i2c_client *client)
 			ret);
 		return ret;
 	}
+#endif
 
 	hooks_installed = true;
 
@@ -3517,7 +3559,7 @@ static int max77759_probe(struct i2c_client *client)
 	u16 device_id;
 	u32 ovp_handle, regulator_handle;
 	const char *ovp_status;
-	enum of_gpio_flags flags;
+	bool active_low;
 	u32 first_src_pdo = 0;
 	const char *ws_name_prefix = "cc_toggle-";
 	ssize_t ws_name_len;
@@ -3562,32 +3604,31 @@ static int max77759_probe(struct i2c_client *client)
 
 	chip->in_switch_gpio = -EINVAL;
 	if (of_property_read_bool(dn, "ovp-present")) {
-		chip->in_switch_gpio = of_get_named_gpio_flags(dn, "in-switch-gpio", 0, &flags);
+		chip->in_switch_gpio = max77759_of_get_named_gpio(dn, "in-switch-gpio", 0, &active_low);
 		if (chip->in_switch_gpio < 0) {
 			dev_err(&client->dev, "in-switch-gpio not found\n");
 			return -EPROBE_DEFER;
 		}
-		chip->in_switch_gpio_active_high = (flags & OF_GPIO_ACTIVE_LOW) ? 0 : 1;
+		chip->in_switch_gpio_active_high = active_low ? 0 : 1;
 	} else if (!of_property_read_u32(dn, "max20339,ovp", &ovp_handle)) {
 		ovp_dn = of_find_node_by_phandle(ovp_handle);
 		if (!IS_ERR_OR_NULL(ovp_dn) &&
 		    !of_property_read_string(ovp_dn, "status", &ovp_status) &&
 		    strncmp(ovp_status, "disabled", strlen("disabled"))) {
-			chip->in_switch_gpio = of_get_named_gpio_flags(dn, "in-switch-gpio", 0,
-								       &flags);
+			chip->in_switch_gpio = max77759_of_get_named_gpio(dn, "in-switch-gpio", 0, &active_low);
 			if (chip->in_switch_gpio < 0) {
 				dev_err(&client->dev, "in-switch-gpio not found\n");
 				return -EPROBE_DEFER;
 			}
-			chip->in_switch_gpio_active_high = (flags & OF_GPIO_ACTIVE_LOW) ? 0 : 1;
+			chip->in_switch_gpio_active_high = active_low ? 0 : 1;
 		}
 	}
 
-	chip->sbu_mux_en_gpio = of_get_named_gpio_flags(dn, "sbu-mux-en-gpio", 0, &flags);
+	chip->sbu_mux_en_gpio = max77759_of_get_named_gpio(dn, "sbu-mux-en-gpio", 0, &active_low);
 	if (chip->sbu_mux_en_gpio < 0) {
 		dev_err(&client->dev, "sbu-mux-en-gpio not found\n");
 	}
-	chip->sbu_mux_sel_gpio = of_get_named_gpio_flags(dn, "sbu-mux-sel-gpio", 0, &flags);
+	chip->sbu_mux_sel_gpio = max77759_of_get_named_gpio(dn, "sbu-mux-sel-gpio", 0, &active_low);
 	if (chip->sbu_mux_sel_gpio < 0) {
 		dev_err(&client->dev, "sbu-mux-sel-gpio not found\n");
 	}
