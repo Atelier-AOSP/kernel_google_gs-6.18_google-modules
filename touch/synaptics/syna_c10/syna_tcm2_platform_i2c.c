@@ -733,8 +733,7 @@ static struct syna_hw_interface syna_i2c_hw_if = {
  * @return
  *    on success, 0; otherwise, negative value on error.
  */
-static int syna_i2c_probe(struct i2c_client *i2c,
-		const struct i2c_device_id *dev_id)
+static int syna_i2c_probe(struct i2c_client *i2c)
 {
 	int retval;
 	struct syna_hw_attn_data *attn = &syna_i2c_hw_if.bdata_attn;
