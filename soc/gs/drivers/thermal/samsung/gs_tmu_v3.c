@@ -1434,9 +1434,8 @@ static int gs_pi_controller(struct gs_tmu_data *data, int control_temp)
 	// TODO: refactor locking
 	mutex_unlock(&data->lock);
 	mutex_lock(&tz->lock);
-	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
-		if (instance->trip == data->trip_control_temp &&
-		    cdev_is_power_actor(instance->cdev)) {
+	list_for_each_entry(instance, &tz->trips[data->trip_control_temp].thermal_instances, trip_node) {
+		if (cdev_is_power_actor(instance->cdev)) {
 			found_actor = true;
 			cdev = instance->cdev;
 			break;
@@ -1819,10 +1818,20 @@ static void gs_throttle_hard_limit(struct kthread_work *work)
 	unsigned long state, max_state, prev_max_state;
 
 	mutex_lock(&tz->lock);
-	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
-		if (!strncmp(data->tmu_name, instance->tz->type, THERMAL_NAME_LENGTH)) {
-			cdev = instance->cdev;
-			break;
+	/*
+	 * thermal_instance::tz and the zone-wide instance list are gone (v6.12);
+	 * every instance of this zone belongs to tz, so the name check is on tz.
+	 */
+	if (!strncmp(data->tmu_name, tz->type, THERMAL_NAME_LENGTH)) {
+		struct thermal_trip_desc *td;
+
+		for_each_trip_desc(tz, td) {
+			instance = list_first_entry_or_null(&td->thermal_instances,
+							    struct thermal_instance, trip_node);
+			if (instance) {
+				cdev = instance->cdev;
+				break;
+			}
 		}
 	}
 	mutex_unlock(&tz->lock);
@@ -2626,7 +2635,10 @@ static ssize_t offset_enabled_store(struct device *dev,
 		}
 		dev_dbg(&pdev->dev, "trip_temp_%d change from %d to %d\n",
 			i, trip_temp, new_trip_temp);
-		ret = tz->ops->set_trip_temp(tz, i, new_trip_temp);
+		/* ops take a trip pointer; also record the new value in the core (v6.12) */
+		ret = tz->ops->set_trip_temp(tz, &tz->trips[i].trip, new_trip_temp);
+		if (!ret)
+			thermal_zone_set_trip_temp(tz, &tz->trips[i].trip, new_trip_temp);
 
 		// 6.1 moved set_trip_temp to sysfs, this is to address b/315931658
 		if (tz->trips)
@@ -3103,9 +3115,8 @@ static int param_update_acpm_pi_table_set(const char *val, const struct kernel_p
 			struct thermal_cooling_device *cdev;
 			bool found_actor = false;
 
-			list_for_each_entry (instance, &tz->thermal_instances, tz_node) {
-				if (instance->trip == data->trip_control_temp &&
-				    cdev_is_power_actor(instance->cdev)) {
+			list_for_each_entry(instance, &tz->trips[data->trip_control_temp].thermal_instances, trip_node) {
+				if (cdev_is_power_actor(instance->cdev)) {
 					found_actor = true;
 					cdev = instance->cdev;
 					break;
@@ -3545,9 +3556,8 @@ acpm_pi_table_show(struct device *dev, struct device_attribute *devattr,
 	tz = data->tzd;
 	params = data->pi_param;
 
-	list_for_each_entry (instance, &tz->thermal_instances, tz_node) {
-		if (instance->trip == data->trip_control_temp &&
-		    cdev_is_power_actor(instance->cdev)) {
+	list_for_each_entry(instance, &tz->trips[data->trip_control_temp].thermal_instances, trip_node) {
+		if (cdev_is_power_actor(instance->cdev)) {
 			found_actor = true;
 			cdev = instance->cdev;
 			break;
@@ -3592,9 +3602,8 @@ acpm_pi_table_store(struct device *dev, struct device_attribute *devattr,
 	tz = data->tzd;
 	params = data->pi_param;
 
-	list_for_each_entry (instance, &tz->thermal_instances, tz_node) {
-		if (instance->trip == data->trip_control_temp &&
-		    cdev_is_power_actor(instance->cdev)) {
+	list_for_each_entry(instance, &tz->trips[data->trip_control_temp].thermal_instances, trip_node) {
+		if (cdev_is_power_actor(instance->cdev)) {
 			found_actor = true;
 			cdev = instance->cdev;
 			break;
@@ -5216,7 +5225,9 @@ static int gs_tmu_parse_ect(struct gs_tmu_data *data)
 			temperature = function->range_list[i].lower_bound_temperature;
 			freq = function->range_list[i].max_frequency;
 
-			tz->ops->set_trip_temp(tz, i, temperature  * MCELSIUS);
+			if (!tz->ops->set_trip_temp(tz, &tz->trips[i].trip, temperature * MCELSIUS))
+				thermal_zone_set_trip_temp(tz, &tz->trips[i].trip,
+							   temperature * MCELSIUS);
 
 			pr_info("Parsed From ECT : [%d] Temperature : %d, frequency : %u\n",
 				i, temperature, freq);
@@ -5279,7 +5290,9 @@ static int gs_tmu_parse_ect(struct gs_tmu_data *data)
 		for (i = 0; i < pidtm_block->num_of_temperature; ++i) {
 			temperature = pidtm_block->temperature_list[i];
 
-			tz->ops->set_trip_temp(tz, i, temperature  * MCELSIUS);
+			if (!tz->ops->set_trip_temp(tz, &tz->trips[i].trip, temperature * MCELSIUS))
+				thermal_zone_set_trip_temp(tz, &tz->trips[i].trip,
+							   temperature * MCELSIUS);
 
 			pr_info("Parsed From ECT : [%d] Temperature : %d\n", i, temperature);
 		}
