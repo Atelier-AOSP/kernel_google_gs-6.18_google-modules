@@ -1745,7 +1745,7 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 	struct bts_scen *scen;
 	struct bts_info *info;
 	struct device_node *child_np = NULL;
-	struct device_node *snp = NULL;
+	struct device_node *snp __maybe_unused = NULL;
 	struct resource res;
 	int i, j, map_cnt, count;
 	int of_data_int_array[OF_DATA_NUM_MAX];
