@@ -1603,7 +1603,6 @@ static void dpp_remove(struct platform_device *pdev)
 		iounmap(dpp->regs.hdr_comm_base_regs);
 	iounmap(dpp->regs.dma_base_regs);
 
-	return 0;
 }
 
 struct platform_driver dpp_driver = {

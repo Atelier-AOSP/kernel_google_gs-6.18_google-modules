@@ -121,7 +121,7 @@ void decon_dump_locked(const struct decon_device *decon, struct drm_printer *p)
 
 	if (!p) {
 		printer = is_console_enabled() ?
-			drm_debug_printer("[drm]") : drm_info_printer(decon->dev);
+			drm_dbg_printer(NULL, DRM_UT_DRIVER, "[drm]") : drm_info_printer(decon->dev);
 		pointer = &printer;
 	} else {
 		pointer = p;
@@ -1942,6 +1942,7 @@ static DEVICE_ATTR_RW(early_wakeup);
 
 static int decon_bind(struct device *dev, struct device *master, void *data)
 {
+	struct iommu_domain *domain;
 	struct decon_device *decon = dev_get_drvdata(dev);
 	struct drm_device *drm_dev = data;
 	struct exynos_drm_private *priv = drm_to_exynos_dev(drm_dev);
@@ -2145,8 +2146,6 @@ static irqreturn_t decon_fs_irq_handler(int irq, void *dev_data)
 static int decon_parse_dt(struct decon_device *decon, struct device_node *np)
 {
 	struct device_node *dpp_np = NULL;
-	struct property *prop;
-	const __be32 *cur;
 	u32 val;
 	int ret = 0, i, count;
 	int dpp_id;

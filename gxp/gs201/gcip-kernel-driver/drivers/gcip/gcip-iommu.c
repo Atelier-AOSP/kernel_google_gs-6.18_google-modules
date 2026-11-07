@@ -1317,7 +1317,7 @@ int gcip_iommu_map(struct gcip_iommu_domain *domain, dma_addr_t iova, phys_addr_
 #if GCIP_IOMMU_MAP_HAS_GFP
 	return iommu_map(domain->domain, iova, paddr, size, prot, GFP_KERNEL);
 #else
-	return iommu_map(domain->domain, iova, paddr, size, prot);
+	return iommu_map(domain->domain, iova, paddr, size, prot, GFP_KERNEL);
 #endif /* GCIP_IOMMU_MAP_HAS_GFP */
 }
 
