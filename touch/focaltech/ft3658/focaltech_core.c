@@ -31,6 +31,7 @@
 /*****************************************************************************
 * Included header files
 *****************************************************************************/
+#include <linux/pinctrl/consumer.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/of.h>

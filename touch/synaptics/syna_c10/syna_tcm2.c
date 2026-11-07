@@ -49,6 +49,7 @@
 #include "synaptics_touchcom_func_romboot.h"
 #endif
 #if defined(USE_DRM_BRIDGE)
+#include <linux/pinctrl/consumer.h>
 #include <samsung/exynos_drm_connector.h>
 #include <samsung/panel/panel-samsung-drv.h>
 #endif

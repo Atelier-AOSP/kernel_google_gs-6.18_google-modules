@@ -1567,7 +1567,7 @@ static int syna_spi_probe(struct spi_device *spi)
 	struct s3c64xx_spi_driver_data *s3c64xx_sdd;
 #endif
 
-	if (spi->controller->flags & SPI_MASTER_HALF_DUPLEX) {
+	if (spi->controller->flags & SPI_CONTROLLER_HALF_DUPLEX) {
 		LOGE("Full duplex not supported by host\n");
 		return -EIO;
 	}
