@@ -196,8 +196,7 @@ enum v4l2_mpeg_mfc51_video_frame_type {
 					(V4L2_CID_MPEG_MFC_BASE + 32)
 #define V4L2_CID_MPEG_VIDEO_FRAME_ERROR_TYPE\
 					(V4L2_CID_MPEG_MFC_BASE + 33)
-#define V4L2_CID_MPEG_VIDEO_AVERAGE_QP				\
-					(V4L2_CID_MPEG_MFC_BASE + 34)
+/* V4L2_CID_MPEG_VIDEO_AVERAGE_QP is defined in uapi v4l2-controls.h since v6.x */
 #define V4L2_CID_MPEG_VIDEO_GOP_CTRL			\
 					(V4L2_CID_MPEG_MFC_BASE + 35)
 #define V4L2_CID_MPEG_VIDEO_PRIORITY			\

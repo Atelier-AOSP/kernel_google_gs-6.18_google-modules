@@ -11,6 +11,8 @@
 
 #include <linux/list.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/sysctl.h>
 #include <linux/proc_fs.h>

@@ -24,6 +24,8 @@
 #include <linux/gpio/driver.h>
 #include <linux/irqdomain.h>
 #include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/seq_file.h>
 #include <linux/spinlock.h>
 #include <linux/syscore_ops.h>
 
@@ -1068,7 +1070,7 @@ static int samsung_gpiolib_register(struct platform_device *pdev,
 		gc->base = bank->grange.base;
 		gc->ngpio = bank->nr_pins;
 		gc->parent = &pdev->dev;
-		gc->of_node = bank->of_node;
+		gc->fwnode = of_fwnode_handle(bank->of_node);
 		gc->label = bank->name;
 
 		ret = devm_gpiochip_add_data(&pdev->dev, gc, bank);
