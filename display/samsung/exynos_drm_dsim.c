@@ -3272,7 +3272,7 @@ err:
 	return ret;
 }
 
-static int dsim_remove(struct platform_device *pdev)
+static void dsim_remove(struct platform_device *pdev)
 {
 	struct dsim_device *dsim = platform_get_drvdata(pdev);
 
