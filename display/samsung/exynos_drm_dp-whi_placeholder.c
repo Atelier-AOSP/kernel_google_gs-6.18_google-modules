@@ -53,14 +53,14 @@ EXPORT_SYMBOL_GPL(dp_hdcp_update_cp);
 int dp_dpcd_read_for_hdcp22(u32 address, u32 length, u8 *data)
 {
 	pr_err("%s: not supported by this device\n", __func__);
-	return;
+	return -EFAULT;
 }
 EXPORT_SYMBOL_GPL(dp_dpcd_read_for_hdcp22);
 
 int dp_dpcd_write_for_hdcp22(u32 address, u32 length, u8 *data)
 {
 	pr_err("%s: not supported by this device\n", __func__);
-	return;
+	return -EFAULT;
 }
 EXPORT_SYMBOL_GPL(dp_dpcd_write_for_hdcp22);
 
@@ -72,13 +72,12 @@ static const struct of_device_id dp_of_match[] = {
 static int dp_probe(struct platform_device *pdev)
 {
 	pr_err("%s: not supported by this device\n", __func__);
-	return;
+	return -EFAULT;
 }
 
 static void dp_remove(struct platform_device *pdev)
 {
 	pr_err("%s: not supported by this device\n", __func__);
-	return;
 }
 
 
