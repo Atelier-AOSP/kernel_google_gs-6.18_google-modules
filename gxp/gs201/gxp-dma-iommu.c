@@ -32,34 +32,17 @@ struct gxp_dma_iommu_manager {
 
 /* Fault handler */
 
-static int iommu_fault_handler(struct iommu_fault *fault, void *token)
+/*
+ * iommu_register_device_fault_handler() and the iommu_fault event layout are
+ * gone from the v6.12 IOMMU API; log faults via the domain fault handler.
+ */
+static int iommu_fault_handler(struct iommu_domain *domain, struct device *fdev,
+			       unsigned long iova, int flags, void *token)
 {
 	struct device *dev = token;
 
-	switch (fault->type) {
-	case IOMMU_FAULT_DMA_UNRECOV:
-		dev_err(dev, "Unrecoverable IOMMU fault!\n");
-		dev_err(dev, "reason = %08X\n", fault->event.reason);
-		dev_err(dev, "flags = %08X\n", fault->event.flags);
-		dev_err(dev, "pasid = %08X\n", fault->event.pasid);
-		dev_err(dev, "perm = %08X\n", fault->event.perm);
-		dev_err(dev, "addr = %llX\n", fault->event.addr);
-		dev_err(dev, "fetch_addr = %llX\n", fault->event.fetch_addr);
-		break;
-	case IOMMU_FAULT_PAGE_REQ:
-		dev_err(dev, "IOMMU page request fault!\n");
-		dev_err(dev, "flags = %08X\n", fault->prm.flags);
-		dev_err(dev, "pasid = %08X\n", fault->prm.pasid);
-		dev_err(dev, "grpid = %08X\n", fault->prm.grpid);
-		dev_err(dev, "perm = %08X\n", fault->prm.perm);
-		dev_err(dev, "addr = %llX\n", fault->prm.addr);
-		break;
-	default:
-		dev_err(dev, "Unexpected IOMMU fault type (%d)\n", fault->type);
-	}
-
-	/* Tells the IOMMU driver to carry on. */
-	return -EAGAIN;
+	dev_err(dev, "IOMMU fault at %#lx (flags %#x)\n", iova, flags);
+	return -ENOSYS;	/* let the IOMMU driver apply its default handling */
 }
 
 #if GXP_HAS_LAP
@@ -124,10 +107,7 @@ int gxp_dma_init(struct gxp_dev *gxp)
 		return PTR_ERR(mgr->default_domain);
 	}
 
-	if (iommu_register_device_fault_handler(gxp->dev, iommu_fault_handler, gxp->dev)) {
-		dev_err(gxp->dev, "Failed to register iommu fault handler\n");
-		return -EIO;
-	}
+	iommu_set_fault_handler(mgr->default_domain->domain, iommu_fault_handler, gxp->dev);
 
 	gxp->dma_mgr = &(mgr->dma_mgr);
 
@@ -136,9 +116,7 @@ int gxp_dma_init(struct gxp_dev *gxp)
 
 void gxp_dma_exit(struct gxp_dev *gxp)
 {
-	if (iommu_unregister_device_fault_handler(gxp->dev))
-		dev_err(gxp->dev,
-			"Failed to unregister IOMMU fault handler\n");
+	/* the domain-level fault handler goes away with the domain */
 }
 
 #define EXT_TPU_MBX_SIZE 0x2000
