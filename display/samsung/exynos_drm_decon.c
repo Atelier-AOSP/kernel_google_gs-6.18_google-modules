@@ -2408,7 +2408,7 @@ static int decon_parse_dt(struct decon_device *decon, struct device_node *np)
 	if (dpp_np)
 		of_node_put(dpp_np);
 
-	of_property_for_each_u32(np, "connector", prop, cur, val)
+	of_property_for_each_u32(np, "connector", val)
 		decon->con_type |= val;
 
 	return 0;
