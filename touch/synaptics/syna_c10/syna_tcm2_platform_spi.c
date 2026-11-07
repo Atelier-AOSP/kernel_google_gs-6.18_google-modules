@@ -1011,7 +1011,7 @@ static int syna_spi_probe(struct spi_device *spi)
 	struct syna_hw_attn_data *attn = &syna_spi_hw_if.bdata_attn;
 	struct syna_hw_bus_data *bus = &syna_spi_hw_if.bdata_io;
 
-	if (spi->master->flags & SPI_MASTER_HALF_DUPLEX) {
+	if (spi->controller->flags & SPI_MASTER_HALF_DUPLEX) {
 		LOGE("Full duplex not supported by host\n");
 		return -EIO;
 	}

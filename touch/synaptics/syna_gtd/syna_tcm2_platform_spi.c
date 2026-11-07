@@ -1531,7 +1531,7 @@ static int syna_spi_probe(struct spi_device *spi)
 	struct s3c64xx_spi_driver_data *s3c64xx_sdd;
 #endif
 
-	if (spi->master->flags & SPI_MASTER_HALF_DUPLEX) {
+	if (spi->controller->flags & SPI_MASTER_HALF_DUPLEX) {
 		LOGE("Full duplex not supported by host\n");
 		return -EIO;
 	}
@@ -1586,7 +1586,7 @@ static int syna_spi_probe(struct spi_device *spi)
 	LOGI("dma_mode %s", syna_spi_hw_if.dma_mode ? "enabled" : "disabled");
 #endif
 #if IS_ENABLED(CONFIG_SPI_S3C64XX_GS)
-	s3c64xx_sdd = spi_master_get_devdata(spi->master);
+	s3c64xx_sdd = spi_master_get_devdata(spi->controller);
 	syna_spi_hw_if.s3c64xx_sci = s3c64xx_sdd->cntrlr_info;
 #endif
 

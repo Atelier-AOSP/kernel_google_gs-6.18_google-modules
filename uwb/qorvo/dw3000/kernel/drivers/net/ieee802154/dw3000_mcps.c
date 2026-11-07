@@ -111,7 +111,7 @@ static int do_start(struct dw3000 *dw, const void *in, void *out)
 #if (KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE)
 	struct spi_controller *ctlr = dw->spi->controller;
 #else
-	struct spi_master *ctlr = dw->spi->master;
+	struct spi_master *ctlr = dw->spi->controller;
 #endif
 	const unsigned long changed = (unsigned long)-1;
 	int rc;
@@ -213,7 +213,7 @@ static int do_stop(struct dw3000 *dw, const void *in, void *out)
 #if (KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE)
 		struct spi_controller *ctlr = dw->spi->controller;
 #else
-		struct spi_master *ctlr = dw->spi->master;
+		struct spi_master *ctlr = dw->spi->controller;
 #endif
 		pm_runtime_put(ctlr->dev.parent);
 		dw->has_lock_pm = false;
