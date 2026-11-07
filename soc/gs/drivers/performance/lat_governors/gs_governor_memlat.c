@@ -8,6 +8,7 @@
 
 #include <dt-bindings/soc/google/zuma-devfreq.h>
 #include <governor.h>
+#include <linux/platform_device.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/errno.h>
