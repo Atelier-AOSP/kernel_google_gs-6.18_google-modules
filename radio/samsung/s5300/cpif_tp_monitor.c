@@ -4,6 +4,8 @@
  *
  */
 
+#include <net/rps.h>
+#include <net/netdev_rx_queue.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include "modem_prj.h"

@@ -36,6 +36,41 @@
 #include "../exynos_drm_dsim.h"
 #include "../exynos_drm_dqe.h"
 #include "panel-samsung-drv.h"
+#include <linux/of.h>
+
+#ifndef PIXEL_OF_GPIO_FLAGS_COMPAT
+#define PIXEL_OF_GPIO_FLAGS_COMPAT
+/*
+ * of_get_named_gpio_flags() and enum of_gpio_flags were removed upstream (v6.x).
+ * Local equivalent for the standard two-cell GPIO specifier.
+ */
+enum of_gpio_flags {
+	OF_GPIO_ACTIVE_LOW = 0x1,
+	OF_GPIO_SINGLE_ENDED = 0x2,
+	OF_GPIO_OPEN_DRAIN = 0x4,
+	OF_GPIO_TRANSITORY = 0x8,
+	OF_GPIO_PULL_UP = 0x10,
+	OF_GPIO_PULL_DOWN = 0x20,
+};
+
+static inline int of_get_named_gpio_flags(const struct device_node *np,
+					  const char *name, int idx,
+					  enum of_gpio_flags *flags)
+{
+	struct of_phandle_args args;
+
+	if (flags) {
+		*flags = 0;
+		if (!of_parse_phandle_with_args((struct device_node *)np, name,
+						"#gpio-cells", idx, &args)) {
+			if (args.args_count >= 2)
+				*flags = (enum of_gpio_flags)args.args[1];
+			of_node_put(args.np);
+		}
+	}
+	return of_get_named_gpio(np, name, idx);
+}
+#endif
 
 #define PANEL_ID_REG		0xA1
 #define PANEL_ID_LEN		7

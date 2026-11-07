@@ -8,6 +8,7 @@
 /* TODO: Use dev_*() calls instead */
 #define pr_fmt(fmt) "GPSREGS: " fmt
 
+#include <linux/pinctrl/consumer.h>
 #include <linux/module.h>
 #include <linux/ioport.h>
 #include <linux/device.h>
