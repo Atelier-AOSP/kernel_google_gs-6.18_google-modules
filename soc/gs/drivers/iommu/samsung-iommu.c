@@ -1576,6 +1576,13 @@ static int samsung_sysmmu_device_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 
+	/*
+	 * Since v6.4 the core caps a client's PASIDs at iommu_device.max_pasids
+	 * (0 = PASIDs unsupported), and iommu_attach_device_pasid() fails with
+	 * -EINVAL otherwise. PASIDs map 1:1 onto the SysMMU's VIDs.
+	 */
+	data->iommu.max_pasids = MAX_VIDS;
+
 	err = iommu_device_register(&data->iommu, &samsung_sysmmu_ops, dev);
 	if (err) {
 		dev_err(dev, "failed to register iommu\n");
