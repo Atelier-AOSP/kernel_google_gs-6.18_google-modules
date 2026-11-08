@@ -2,6 +2,13 @@
 /*
  * Copyright (C) 2021 - Google LLC
  * Author: David Brazdil <dbrazdil@google.com>
+ *
+ * android16-6.12 port: the 6.1 pkvm_iommu driver model was replaced upstream
+ * by struct kvm_iommu_ops. All S2MPUs share one MPT, the host stage-2 identity
+ * map, which pKVM keeps up to date through ->host_stage2_idmap(). Runtime
+ * power transitions arrive through the HOST_HVC power domain registered by
+ * kvm_iommu_init_device() and end up in ->suspend()/->resume() with the
+ * per-IOMMU lock held.
  */
 
 #include <linux/kvm_host.h>
@@ -9,7 +16,9 @@
 #include <asm/kvm_asm.h>
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
+#include <asm/kvm_pkvm_module.h>
 #include "kvm_s2mpu.h"
+#include "s2mpu-hyp-iface.h"
 
 #include <linux/arm-smccc.h>
 
@@ -38,9 +47,6 @@
 	(CONTEXT_CFG_VALID_VID_CTX_VID(ctxid, vid) \
 	 | (((ctxid) < (nr_ctx)) ? CONTEXT_CFG_VALID_VID_CTX_VALID(ctxid) : 0))
 
-#define for_each_child(child, dev) \
-	list_for_each_entry((child), &(dev)->children, siblings)
-
 /* kvm_s2mpu.h makes all preprocessor checks about the version correctness. */
 #ifdef S2MPU_V9
 #define INIT_S2MPU(dev)					__initialize_ctx(dev)
@@ -52,11 +58,6 @@
 #define SET_CONTROL_REGS(dev)				__set_control_regs(dev)
 #endif
 
-struct s2mpu_drv_data {
-	u32 version;
-	u32 context_cfg_valid_vid;
-};
-
 static const struct s2mpu_mpt_ops *mpt_ops;
 static const struct pkvm_module_ops *mod_ops;
 
@@ -64,17 +65,21 @@ static const struct pkvm_module_ops *mod_ops;
 #define CALL_FROM_OPS(fn, ...)		mod_ops->fn(__VA_ARGS__)
 
 #define __pkvm_hyp_donate_host(x, y)	CALL_FROM_OPS(hyp_donate_host, x, y)
-#define __pkvm_host_donate_hyp(x, y)	CALL_FROM_OPS(host_donate_hyp, x, y)
+#define __pkvm_host_donate_hyp(x, y, m)	CALL_FROM_OPS(host_donate_hyp, x, y, m)
 
 #ifdef kern_hyp_va
 #undef kern_hyp_va
 #endif
-#define kern_hyp_va(x)			((u32 *)CALL_FROM_OPS(kern_hyp_va, (unsigned long)x))
+#define kern_hyp_va(x)			((void *)CALL_FROM_OPS(kern_hyp_va, (unsigned long)(x)))
 
 #ifdef __hyp_pa
 #undef __hyp_pa
 #endif
 #define __hyp_pa(x)			CALL_FROM_OPS(hyp_pa, x)
+#ifdef __hyp_va
+#undef __hyp_va
+#endif
+#define __hyp_va(x)			CALL_FROM_OPS(hyp_va, x)
 
 void *memset(void *dst, int c, size_t count)
 {
@@ -86,35 +91,48 @@ void *memcpy(void *dst, const void *src, size_t count)
 	return CALL_FROM_OPS(memcpy, dst, src, count);
 }
 
+/*
+ * Published by the EL1 driver before the EL2 module is loaded, consumed (and
+ * the memory they point to taken over) by s2mpu_init().
+ */
+struct s2mpu_hyp_dev *s2mpu_hyp_devs;
+u32 s2mpu_hyp_nr_devs;
+struct mpt *s2mpu_hyp_mpt_desc;
+
+static struct s2mpu_hyp_dev *devs;
+static u32 nr_devs;
 static struct mpt host_mpt;
 
-const struct pkvm_iommu_ops pkvm_s2mpu_ops;
-const struct pkvm_iommu_ops pkvm_sysmmu_sync_ops;
+#define for_each_s2mpu(dev) \
+	for ((dev) = devs; (dev) < devs + nr_devs; (dev)++)
 
-static inline enum mpt_prot prot_to_mpt(enum kvm_pgtable_prot prot)
+static inline struct s2mpu_hyp_dev *to_s2mpu(struct kvm_hyp_iommu *iommu)
 {
-	return ((prot & KVM_PGTABLE_PROT_R) ? MPT_PROT_R : 0) |
-	       ((prot & KVM_PGTABLE_PROT_W) ? MPT_PROT_W : 0);
+	return container_of(iommu, struct s2mpu_hyp_dev, iommu);
 }
 
-static bool is_version(struct pkvm_iommu *dev, u32 version)
+static inline enum mpt_prot iommu_prot_to_mpt(int prot)
 {
-	struct s2mpu_drv_data *data = (struct s2mpu_drv_data *)dev->data;
-
-	return (data->version & VERSION_CHECK_MASK) == version;
+	return ((prot & IOMMU_READ) ? MPT_PROT_R : 0) |
+	       ((prot & IOMMU_WRITE) ? MPT_PROT_W : 0);
 }
 
-static u32 __context_cfg_valid_vid(struct pkvm_iommu *dev, u32 vid_bmap)
+static bool is_version(struct s2mpu_hyp_dev *dev, u32 version)
 {
-	struct s2mpu_drv_data *data = (struct s2mpu_drv_data *)dev->data;
-	u8 ctx_vid[NR_CTX_IDS] = { 0 };
+	
+	return (dev->version & VERSION_CHECK_MASK) == version;
+}
+
+static u32 __context_cfg_valid_vid(struct s2mpu_hyp_dev *dev, u32 vid_bmap)
+{
+		u8 ctx_vid[NR_CTX_IDS] = { 0 };
 	unsigned int vid, ctx = 0;
 	unsigned int num_ctx;
 	u32 res;
 
 	/* Only initialize once. */
-	if (data->context_cfg_valid_vid)
-		return data->context_cfg_valid_vid;
+	if (dev->context_cfg_valid_vid)
+		return dev->context_cfg_valid_vid;
 
 	num_ctx = readl_relaxed(dev->va + REG_NS_NUM_CONTEXT) & NUM_CONTEXT_MASK;
 	while (vid_bmap) {
@@ -138,11 +156,11 @@ static u32 __context_cfg_valid_vid(struct pkvm_iommu *dev, u32 vid_bmap)
 	    | CTX_CFG_ENTRY(6, ctx, ctx_vid[6])
 	    | CTX_CFG_ENTRY(7, ctx, ctx_vid[7]);
 
-	data->context_cfg_valid_vid = res;
+	dev->context_cfg_valid_vid = res;
 	return res;
 }
 
-static int __maybe_unused __initialize_ctx(struct pkvm_iommu *dev)
+static int __maybe_unused __initialize_ctx(struct s2mpu_hyp_dev *dev)
 {
 	u32 ssmt_valid_vid_bmap, ctx_cfg;
 
@@ -161,14 +179,13 @@ static int __maybe_unused __initialize_ctx(struct pkvm_iommu *dev)
 	return 0;
 }
 
-static int __maybe_unused __initialize(struct pkvm_iommu *dev)
+static int __maybe_unused __initialize(struct s2mpu_hyp_dev *dev)
 {
-	struct s2mpu_drv_data *data = (struct s2mpu_drv_data *)dev->data;
+	
+	if (!dev->version)
+		dev->version = readl_relaxed(dev->va + REG_NS_VERSION);
 
-	if (!data->version)
-		data->version = readl_relaxed(dev->va + REG_NS_VERSION);
-
-	switch (data->version & VERSION_CHECK_MASK) {
+	switch (dev->version & VERSION_CHECK_MASK) {
 	case S2MPU_VERSION_1:
 		return 0;
 	case S2MPU_VERSION_2:
@@ -178,7 +195,7 @@ static int __maybe_unused __initialize(struct pkvm_iommu *dev)
 	}
 }
 
-static void __maybe_unused __set_control_regs(struct pkvm_iommu *dev)
+static void __maybe_unused __set_control_regs(struct s2mpu_hyp_dev *dev)
 {
 	u32 ctrl0 = 0, irq_vids;
 
@@ -211,7 +228,7 @@ static void __maybe_unused __set_control_regs(struct pkvm_iommu *dev)
 	writel_relaxed(ctrl0, dev->va + REG_NS_CTRL0);
 }
 
-static void __maybe_unused __set_control_regs_v9(struct pkvm_iommu *dev)
+static void __maybe_unused __set_control_regs_v9(struct s2mpu_hyp_dev *dev)
 {
 	/* Return DECERR to device on permission fault. */
 	writel_relaxed(ALL_VIDS_BITMAP,
@@ -287,28 +304,28 @@ static void __invalidation_barrier_slow(void *dev_va)
 }
 
 /* Initiate invalidation barrier. */
-static void __invalidation_barrier_init(struct pkvm_iommu *dev)
+static void __invalidation_barrier_init(struct s2mpu_hyp_dev *dev)
 {
-	struct pkvm_iommu *sync;
+	u32 i;
 
 	if (dev->flags & S2MPU_HAS_SYNC) {
 		__sync_cmd_start(dev->va + REG_NS_V9_SYNC_DEV_OFFSET);
 	} else {
-		for_each_child(sync, dev)
-			__sync_cmd_start(sync->va);
+		for (i = 0; i < dev->nr_syncs; i++)
+			__sync_cmd_start(dev->sync_va[i]);
 	}
 }
 
 /* Wait for invalidation to complete. */
-static void __invalidation_barrier_complete(struct pkvm_iommu *dev)
+static void __invalidation_barrier_complete(struct s2mpu_hyp_dev *dev)
 {
-	struct pkvm_iommu *sync;
+	u32 i;
 
 	if (dev->flags & S2MPU_HAS_SYNC) {
 		__invalidation_barrier_slow(dev->va + REG_NS_V9_SYNC_DEV_OFFSET);
 	} else {
-		for_each_child(sync, dev)
-			__invalidation_barrier_slow(sync->va);
+		for (i = 0; i < dev->nr_syncs; i++)
+			__invalidation_barrier_slow(dev->sync_va[i]);
 	}
 
 	/* Must not access SFRs while S2MPU is busy invalidating */
@@ -318,14 +335,14 @@ static void __invalidation_barrier_complete(struct pkvm_iommu *dev)
 	}
 }
 
-static void __all_invalidation(struct pkvm_iommu *dev)
+static void __all_invalidation(struct s2mpu_hyp_dev *dev)
 {
 	writel_relaxed(INVALIDATION_INVALIDATE, dev->va + REG_NS_ALL_INVALIDATION);
 	__invalidation_barrier_init(dev);
 	__invalidation_barrier_complete(dev);
 }
 
-static void __range_invalidation_init(struct pkvm_iommu *dev, phys_addr_t first_byte,
+static void __range_invalidation_init(struct s2mpu_hyp_dev *dev, phys_addr_t first_byte,
 				      phys_addr_t last_byte)
 {
 	u32 start_ppn = first_byte >> RANGE_INVALIDATION_PPN_SHIFT;
@@ -341,7 +358,7 @@ static void __range_invalidation_init(struct pkvm_iommu *dev, phys_addr_t first_
  * Initialize S2MPU device and set all GB regions to 1G granularity with
  * given protection bits.
  */
-static int initialize_with_prot(struct pkvm_iommu *dev, enum mpt_prot prot)
+static int initialize_with_prot(struct s2mpu_hyp_dev *dev, enum mpt_prot prot)
 {
 	int ret;
 
@@ -361,7 +378,7 @@ static int initialize_with_prot(struct pkvm_iommu *dev, enum mpt_prot prot)
  * Initialize S2MPU device, set L2 table addresses and configure L1TABLE_ATTR
  * registers according to the given MPT struct.
  */
-static int initialize_with_mpt(struct pkvm_iommu *dev, struct mpt *mpt)
+static int initialize_with_mpt(struct s2mpu_hyp_dev *dev, struct mpt *mpt)
 {
 	int ret;
 
@@ -396,58 +413,59 @@ static bool to_valid_range(phys_addr_t *start, phys_addr_t *end)
 	return true;
 }
 
-static void __mpt_idmap_prepare(struct mpt *mpt, phys_addr_t first_byte,
-				phys_addr_t last_byte, enum mpt_prot prot)
-{
-	mpt_ops->prepare_range(mpt, first_byte, last_byte, prot);
-}
-
-static void __mpt_idmap_apply(struct pkvm_iommu *dev, struct mpt *mpt,
+static void __mpt_idmap_apply(struct s2mpu_hyp_dev *dev, struct mpt *mpt,
 			      phys_addr_t first_byte, phys_addr_t last_byte)
 {
 	unsigned int first_gb = first_byte / SZ_1G;
 	unsigned int last_gb = last_byte / SZ_1G;
 
 	mpt_ops->apply_range(dev->va, mpt, first_gb, last_gb);
-	/* Initiate invalidation, completed in __mdt_idmap_complete. */
+	/* Initiate invalidation, completed in s2mpu_host_stage2_idmap_complete. */
 	__range_invalidation_init(dev, first_byte, last_byte);
 }
 
-static void __mpt_idmap_complete(struct pkvm_iommu *dev, struct mpt *mpt)
+/*
+ * Called with host_mmu.lock held, for every change of the host stage-2 and
+ * once per leaf while the stage-2 is being snapshotted.
+ */
+static void s2mpu_host_stage2_idmap(struct kvm_hyp_iommu_domain *domain,
+				    phys_addr_t start, phys_addr_t end, int prot)
 {
-	__invalidation_barrier_complete(dev);
-}
+	struct s2mpu_hyp_dev *dev;
 
-static void s2mpu_host_stage2_idmap_prepare(phys_addr_t start, phys_addr_t end,
-					    enum kvm_pgtable_prot prot)
-{
-	if (!to_valid_range(&start, &end))
-		return;
-	__mpt_idmap_prepare(&host_mpt, start, end - 1, prot_to_mpt(prot));
-}
-
-static void s2mpu_host_stage2_idmap_apply(struct pkvm_iommu *dev,
-					  phys_addr_t start, phys_addr_t end)
-{
 	if (!to_valid_range(&start, &end))
 		return;
 
-	if (dev->flags & S2MPU_DENY_ALL)
-		return;
+	mpt_ops->prepare_range(&host_mpt, start, end - 1, iommu_prot_to_mpt(prot));
 
-	__mpt_idmap_apply(dev, &host_mpt, start, end - 1);
+	for_each_s2mpu(dev) {
+		if (dev->flags & S2MPU_DENY_ALL)
+			continue;
+		kvm_iommu_lock(&dev->iommu);
+		if (!dev->iommu.power_is_off)
+			__mpt_idmap_apply(dev, &host_mpt, start, end - 1);
+		kvm_iommu_unlock(&dev->iommu);
+	}
 }
 
-static void s2mpu_host_stage2_idmap_complete(struct pkvm_iommu *dev)
+static void s2mpu_host_stage2_idmap_complete(bool map)
 {
-	if (dev->flags & S2MPU_DENY_ALL)
-		return;
+	struct s2mpu_hyp_dev *dev;
 
-	__mpt_idmap_complete(dev, &host_mpt);
+	for_each_s2mpu(dev) {
+		if (dev->flags & S2MPU_DENY_ALL)
+			continue;
+		kvm_iommu_lock(&dev->iommu);
+		if (!dev->iommu.power_is_off)
+			__invalidation_barrier_complete(dev);
+		kvm_iommu_unlock(&dev->iommu);
+	}
 }
 
-static int s2mpu_resume(struct pkvm_iommu *dev)
+static int s2mpu_resume(struct kvm_hyp_iommu *iommu)
 {
+	struct s2mpu_hyp_dev *dev = to_s2mpu(iommu);
+
 	/*
 	 * Initialize the S2MPU with the host stage-2 MPT. It is paramount
 	 * that the S2MPU reset state is enabled and blocking all traffic,
@@ -460,8 +478,10 @@ static int s2mpu_resume(struct pkvm_iommu *dev)
 	return initialize_with_mpt(dev, &host_mpt);
 }
 
-static int s2mpu_suspend(struct pkvm_iommu *dev)
+static int s2mpu_suspend(struct kvm_hyp_iommu *iommu)
 {
+	struct s2mpu_hyp_dev *dev = to_s2mpu(iommu);
+
 	/*
 	 * Stop updating the S2MPU when the host informs us about the intention
 	 * to suspend it. Writes to powered-down MMIO registers would trigger
@@ -523,9 +543,8 @@ static u32 host_mmio_reg_access_mask(size_t off, bool is_write)
 	return HOST_MMIO_REG_ACCESS_MASK(off, is_write);
 }
 
-static bool s2mpu_host_dabt_handler(struct pkvm_iommu *dev,
-				    struct kvm_cpu_context *host_ctxt,
-				    u32 esr, size_t off)
+static bool s2mpu_dabt_device(struct s2mpu_hyp_dev *dev, struct user_pt_regs *regs,
+			      u64 esr, size_t off)
 {
 	bool is_write = esr & ESR_ELx_WNR;
 	unsigned int len = BIT((esr & ESR_ELx_SAS) >> ESR_ELx_SAS_SHIFT);
@@ -540,146 +559,228 @@ static bool s2mpu_host_dabt_handler(struct pkvm_iommu *dev,
 	if (!mask)
 		return false;
 
-	if (is_write)
-		writel_relaxed(cpu_reg(host_ctxt, rd) & mask, dev->va + off);
-	else
-		cpu_reg(host_ctxt, rd) = readl_relaxed(dev->va + off);
+	if (is_write) {
+		u64 val = (rd == 31) ? 0 : regs->regs[rd];
+
+		writel_relaxed(val & mask, dev->va + off);
+	} else {
+		u32 val = readl_relaxed(dev->va + off);
+
+		if (rd != 31)
+			regs->regs[rd] = val;
+	}
 	return true;
 }
 
-static int s2mpu_init(void *data, size_t size)
+static bool s2mpu_dabt_handler(struct user_pt_regs *regs, u64 esr, u64 addr)
 {
-	struct mpt in_mpt;
-	u32 *smpt;
+	struct s2mpu_hyp_dev *dev;
+
+	for_each_s2mpu(dev) {
+		if (addr < dev->pa || addr >= dev->pa + S2MPU_MMIO_SIZE)
+			continue;
+		return s2mpu_dabt_device(dev, regs, esr, addr - dev->pa);
+	}
+	return false;
+}
+
+static int s2mpu_take_pages(void *kern_va, size_t size, bool mmio, void **hyp_va)
+{
 	phys_addr_t pa;
+	void *va;
+	int ret;
+
+	if (mmio) {
+		pa = (phys_addr_t)(unsigned long)kern_va;
+	} else {
+		va = kern_hyp_va(kern_va);
+		pa = __hyp_pa(va);
+	}
+
+	if (!PAGE_ALIGNED(pa) || !PAGE_ALIGNED(size) || !size)
+		return -EINVAL;
+
+	ret = __pkvm_host_donate_hyp(pa >> PAGE_SHIFT, size >> PAGE_SHIFT, mmio);
+	if (ret)
+		return ret;
+
+	if (hyp_va)
+		*hyp_va = mmio ? __hyp_va(pa) : va;
+	return 0;
+}
+
+static int s2mpu_init_mpt(void)
+{
+	struct mpt *desc;
 	unsigned int gb;
-	int ret = 0;
-	int smpt_nr_pages, smpt_size;
+	u32 smpt_size;
+	void *smpt;
+	int ret;
 
-	if (size != sizeof(in_mpt))
-		return -EINVAL;
-
-	/* The host can concurrently modify 'data'. Copy it to avoid TOCTOU. */
-	memcpy(&in_mpt, data, sizeof(in_mpt));
-
-	/* Get page table operations for this version. */
-	mpt_ops = s2mpu_get_mpt_ops(mod_ops);
-	if (!mpt_ops)
-		return -EINVAL;
+	ret = s2mpu_take_pages(s2mpu_hyp_mpt_desc, PAGE_SIZE, false, (void **)&desc);
+	if (ret)
+		return ret;
 
 	smpt_size = mpt_ops->smpt_size();
-	smpt_nr_pages = smpt_size / PAGE_SIZE;
 
-	/* Take ownership of all SMPT buffers. This will also map them in. */
+	/*
+	 * Everything starts blocked. kvm_iommu_snapshot_host_stage2(), run when
+	 * the host allocates the identity domain, opens up all memory the host
+	 * owns, and later stage-2 changes are mirrored by host_stage2_idmap().
+	 */
 	for_each_gb(gb) {
-		smpt = kern_hyp_va(in_mpt.fmpt[gb].smpt);
-		pa = __hyp_pa(smpt);
-
-		if (!IS_ALIGNED(pa, smpt_size)) {
-			ret = -EINVAL;
-			break;
-		}
-
-		ret = __pkvm_host_donate_hyp(pa >> PAGE_SHIFT, smpt_nr_pages);
+		ret = s2mpu_take_pages(desc->fmpt[gb].smpt, smpt_size, false, &smpt);
 		if (ret)
-			break;
+			return ret;
+		if (!IS_ALIGNED(__hyp_pa(smpt), smpt_size))
+			return -EINVAL;
 
 		host_mpt.fmpt[gb] = (struct fmpt){
 			.smpt = smpt,
 			.gran_1g = true,
-			.prot = MPT_PROT_RW,
+			.prot = MPT_PROT_NONE,
 		};
 	}
+	return 0;
+}
 
-	/* Try to return memory back if there was an error. */
-	if (ret) {
-		for_each_gb(gb) {
-			smpt = host_mpt.fmpt[gb].smpt;
-			if (!smpt)
-				break;
+static int s2mpu_init_device(struct s2mpu_hyp_dev *dev)
+{
+	void *va;
+	u32 i;
+	int ret;
 
-			WARN_ON(__pkvm_hyp_donate_host(__hyp_pa(smpt) >> PAGE_SHIFT,
-						       smpt_nr_pages));
-		}
-		memset(&host_mpt, 0, sizeof(host_mpt));
+	if (dev->nr_syncs > S2MPU_MAX_SYNCS)
+		return -EINVAL;
+
+	ret = s2mpu_take_pages((void *)(unsigned long)dev->pa, S2MPU_MMIO_SIZE, true, &va);
+	if (ret)
+		return ret;
+	dev->va = va;
+
+	for (i = 0; i < dev->nr_syncs; i++) {
+		ret = s2mpu_take_pages((void *)(unsigned long)dev->sync_pa[i],
+				       SYSMMU_SYNC_S2_MMIO_SIZE, true, &va);
+		if (ret)
+			return ret;
+		dev->sync_va[i] = va;
 	}
 
-	return ret;
+	dev->version = 0;
+	dev->context_cfg_valid_vid = 0;
+
+	/* Nothing is programmed until the host resumes the S2MPU. */
+	dev->iommu.power_is_off = true;
+
+	return CALL_FROM_OPS(iommu_init_device, &dev->iommu);
 }
 
-static int s2mpu_validate(struct pkvm_iommu *dev)
+static int s2mpu_init(void)
 {
-	if (dev->size != S2MPU_MMIO_SIZE)
+	struct s2mpu_hyp_dev *dev;
+	size_t size;
+	int ret;
+
+	if (!s2mpu_hyp_nr_devs || !s2mpu_hyp_devs || !s2mpu_hyp_mpt_desc)
 		return -EINVAL;
 
+	mpt_ops = s2mpu_get_mpt_ops(mod_ops);
+	if (!mpt_ops)
+		return -EINVAL;
+
+	nr_devs = s2mpu_hyp_nr_devs;
+	size = PAGE_ALIGN(nr_devs * sizeof(*devs));
+	ret = s2mpu_take_pages(s2mpu_hyp_devs, size, false, (void **)&devs);
+	if (ret)
+		return ret;
+
+	ret = s2mpu_init_mpt();
+	if (ret)
+		return ret;
+
+	for_each_s2mpu(dev) {
+		ret = s2mpu_init_device(dev);
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
-static int s2mpu_validate_child(struct pkvm_iommu *dev, struct pkvm_iommu *child)
+static struct kvm_hyp_iommu *s2mpu_get_iommu_by_id(pkvm_handle_t id)
 {
-	if (child->ops != &pkvm_sysmmu_sync_ops)
-		return -EINVAL;
+	if (id < S2MPU_FIRST_ID || id >= S2MPU_FIRST_ID + nr_devs)
+		return NULL;
 
-	return 0;
+	return &devs[array_index_nospec(id - S2MPU_FIRST_ID, nr_devs)].iommu;
 }
 
-static int sysmmu_sync_validate(struct pkvm_iommu *dev)
+/*
+ * S2MPUs only enforce the host identity map: the only domain the host may
+ * allocate is the identity one, and doing so snapshots the host stage-2 into
+ * the MPT and starts the stream of host_stage2_idmap() updates.
+ */
+static int s2mpu_alloc_domain(struct kvm_hyp_iommu_domain *domain, int type)
 {
-	if (dev->size != SYSMMU_SYNC_S2_MMIO_SIZE)
+	if (type != KVM_IOMMU_DOMAIN_IDMAP_TYPE ||
+	    domain->domain_id != KVM_IOMMU_DOMAIN_IDMAP_ID)
 		return -EINVAL;
 
-	if (!dev->parent || dev->parent->ops != &pkvm_s2mpu_ops)
-		return -EINVAL;
-
-	return 0;
+	return CALL_FROM_OPS(iommu_snapshot_host_stage2, domain);
 }
 
-const struct pkvm_iommu_ops pkvm_s2mpu_ops = (struct pkvm_iommu_ops){
-	.init = s2mpu_init,
-	.validate = s2mpu_validate,
-	.validate_child = s2mpu_validate_child,
-	.resume = s2mpu_resume,
-	.suspend = s2mpu_suspend,
-	.host_stage2_idmap_prepare = s2mpu_host_stage2_idmap_prepare,
-	.host_stage2_idmap_apply = s2mpu_host_stage2_idmap_apply,
-	.host_stage2_idmap_complete = s2mpu_host_stage2_idmap_complete,
-	.host_dabt_handler = s2mpu_host_dabt_handler,
-	.data_size = sizeof(struct s2mpu_drv_data),
-};
+static void s2mpu_free_domain(struct kvm_hyp_iommu_domain *domain)
+{
+}
 
-const struct pkvm_iommu_ops pkvm_sysmmu_sync_ops = (struct pkvm_iommu_ops){
-	.validate = sysmmu_sync_validate,
-};
-struct pkvm_iommu_driver pkvm_s2mpu_driver = (struct pkvm_iommu_driver){
-	.ops = &pkvm_s2mpu_ops,
-};
-struct pkvm_iommu_driver pkvm_sysmmu_sync_driver = (struct pkvm_iommu_driver){
-	.ops = &pkvm_sysmmu_sync_ops,
+static int s2mpu_attach_dev(struct kvm_hyp_iommu *iommu, struct kvm_hyp_iommu_domain *domain,
+			    u32 endpoint_id, u32 pasid, u32 pasid_bits, unsigned long flags)
+{
+	return -EOPNOTSUPP;
+}
+
+static int s2mpu_detach_dev(struct kvm_hyp_iommu *iommu, struct kvm_hyp_iommu_domain *domain,
+			    u32 endpoint_id, u32 pasid)
+{
+	return -EOPNOTSUPP;
+}
+
+/* Shared with the kernel driver in EL1 */
+struct kvm_iommu_ops s2mpu_kvm_iommu_ops = {
+	.init				= s2mpu_init,
+	.get_iommu_by_id		= s2mpu_get_iommu_by_id,
+	.alloc_domain			= s2mpu_alloc_domain,
+	.free_domain			= s2mpu_free_domain,
+	.attach_dev			= s2mpu_attach_dev,
+	.detach_dev			= s2mpu_detach_dev,
+	.dabt_handler			= s2mpu_dabt_handler,
+	.suspend			= s2mpu_suspend,
+	.resume				= s2mpu_resume,
+	.host_stage2_idmap		= s2mpu_host_stage2_idmap,
+	.host_stage2_idmap_complete	= s2mpu_host_stage2_idmap_complete,
 };
 
 /* Validate that module ops used within this driver are not null. */
 static bool validate_mod_ops(const struct pkvm_module_ops *ops)
 {
-	if (!ops ||
-	    !ops->flush_dcache_to_poc ||
-	    !ops->hyp_donate_host ||
-	    !ops->host_donate_hyp ||
-	    !ops->kern_hyp_va ||
-	    !ops->hyp_pa ||
-	    !ops->memset ||
-	    !ops->memcpy)
-		return false;
-
-	return true;
+	return ops &&
+	       ops->flush_dcache_to_poc &&
+	       ops->hyp_donate_host &&
+	       ops->host_donate_hyp &&
+	       ops->kern_hyp_va &&
+	       ops->hyp_pa &&
+	       ops->hyp_va &&
+	       ops->memset &&
+	       ops->memcpy &&
+	       ops->iommu_init_device &&
+	       ops->iommu_snapshot_host_stage2;
 }
 
 /* Called when EL1 loads the module. */
 int s2mpu_hyp_init(const struct pkvm_module_ops *ops)
 {
-	mod_ops = ops;
-	if (!validate_mod_ops(mod_ops))
+	if (!validate_mod_ops(ops))
 		return -EINVAL;
 
+	mod_ops = ops;
 	return 0;
 }
-
