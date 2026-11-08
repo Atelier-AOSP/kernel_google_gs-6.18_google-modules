@@ -292,14 +292,14 @@ static int pixel_ufs_crypto_init_hw_keys_mode(struct ufs_hba *hba)
 	 * program/evict wrapped keys via the KDN, and secondly in order to
 	 * declare wrapped key support rather than standard key support.
 	 */
-	hba->android_quirks |= UFSHCD_QUIRK_CUSTOM_CRYPTO_PROFILE;
+	hba->quirks |= UFSHCD_QUIRK_CUSTOM_CRYPTO_PROFILE;
 
 	/*
 	 * This host controller doesn't support the standard
 	 * CRYPTO_GENERAL_ENABLE bit in REG_CONTROLLER_ENABLE.  Instead it just
 	 * always has crypto support enabled.
 	 */
-	hba->android_quirks |= UFSHCD_QUIRK_BROKEN_CRYPTO_ENABLE;
+	hba->quirks |= UFSHCD_QUIRK_BROKEN_CRYPTO_ENABLE;
 
 	/* Advertise crypto capabilities to the block layer. */
 	err = devm_blk_crypto_profile_init(hba->dev, &hba->crypto_profile,

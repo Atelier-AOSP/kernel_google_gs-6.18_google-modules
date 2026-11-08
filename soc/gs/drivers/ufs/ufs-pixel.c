@@ -1846,7 +1846,7 @@ static struct attribute *pixel_sysfs_power_info[] = {
 	NULL,
 };
 
-static const struct attribute_group pixel_sysfs_power_info_group = {
+static const struct attribute_group __maybe_unused pixel_sysfs_power_info_group = {
 	.name = "power_info",
 	.attrs = pixel_sysfs_power_info,
 };
@@ -1893,7 +1893,7 @@ static const struct attribute_group *pixel_ufs_sysfs_groups[] = {
 	&pixel_sysfs_err_stats_group,
 	&pixel_sysfs_ufs_stats_group,
 	&pixel_sysfs_hc_register_ifc_group,
-	&pixel_sysfs_power_info_group,
+	/* power_info is exposed by the UFS core since v6.8 (duplicate -> -EEXIST) */
 	&pixel_sysfs_power_stats_group,
 #if IS_ENABLED(CONFIG_SCSI_UFS_PIXEL_FIPS140)
 	&pixel_sysfs_fips_group,
