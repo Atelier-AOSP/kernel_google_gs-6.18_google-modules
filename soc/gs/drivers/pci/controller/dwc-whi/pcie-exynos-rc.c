@@ -1830,6 +1830,13 @@ static int exynos_pcie_rc_parse_dt(struct device *dev, struct exynos_pcie *exyno
 
 	pp->msi_irq[0] = -ENODEV;
 
+	/*
+	 * Since v6.10 dw_pcie_setup_rc() unlinks the Root Port's MSI/MSI-X
+	 * capabilities when the DWC iMSI-RX is used, unless asked not to.
+	 * Keep the v6.1 behaviour this driver and the modem were written for.
+	 */
+	pp->keep_rp_msi_en = true;
+
 	if (!of_property_read_string(np, "use-sicd", &use_sicd)) {
 		if (!strcmp(use_sicd, "true")) {
 			dev_info(dev, "## PCIe use SICD\n");
