@@ -103,6 +103,9 @@ static struct s2mpu_hyp_dev *devs;
 static u32 nr_devs;
 static struct mpt host_mpt;
 
+/* Set once the host stage-2 has been snapshotted into host_mpt. */
+static bool host_mpt_snapshot_done;
+
 #define for_each_s2mpu(dev) \
 	for ((dev) = devs; (dev) < devs + nr_devs; (dev)++)
 
@@ -450,6 +453,20 @@ static void s2mpu_host_stage2_idmap(struct kvm_hyp_iommu_domain *domain,
 	if (!to_valid_range(&start, &end))
 		return;
 
+	/*
+	 * After the snapshot, ignore MMIO grants. pKVM calls this for every
+	 * host MMIO page it maps lazily (update_iommu = !is_memory), even in
+	 * the syscore phase of system suspend where always-on S2MPUs such as
+	 * s2mpu_hsi1 are already power-gated without the host suspending them
+	 * (they keep passing modem/AoC DMA in sleep): polling their SysMMU_SYNC
+	 * then takes a synchronous external abort at EL2 and the hypervisor
+	 * panics. The snapshot already made all host-owned MMIO RW, so these
+	 * calls only re-grant access; revocations (prot == 0) still apply.
+	 * 6.1 never forwarded lazy MMIO mappings to the S2MPU driver either.
+	 */
+	if (host_mpt_snapshot_done && (prot & IOMMU_MMIO))
+		return;
+
 	mpt_ops->prepare_range(&host_mpt, start, end - 1, iommu_prot_to_mpt(prot));
 
 	/*
@@ -749,11 +766,16 @@ static struct kvm_hyp_iommu *s2mpu_get_iommu_by_id(pkvm_handle_t id)
  */
 static int s2mpu_alloc_domain(struct kvm_hyp_iommu_domain *domain, int type)
 {
+	int ret;
+
 	if (type != KVM_IOMMU_DOMAIN_IDMAP_TYPE ||
 	    domain->domain_id != KVM_IOMMU_DOMAIN_IDMAP_ID)
 		return -EINVAL;
 
-	return CALL_FROM_OPS(iommu_snapshot_host_stage2, domain);
+	ret = CALL_FROM_OPS(iommu_snapshot_host_stage2, domain);
+	if (!ret)
+		host_mpt_snapshot_done = true;
+	return ret;
 }
 
 static void s2mpu_free_domain(struct kvm_hyp_iommu_domain *domain)
