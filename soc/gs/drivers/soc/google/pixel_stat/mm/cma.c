@@ -50,7 +50,15 @@ void vh_cma_alloc_start(void *data, const char *name, unsigned long count,
 	struct vendor_task_struct *tsk;
 
 	tsk = get_vendor_task_struct(current);
-	set_vendor_task_struct_private(tsk, jiffies);
+	/*
+	 * Overwrite instead of set_vendor_task_struct_private(), which warns on
+	 * a non-zero value. Since v6.12 Android's __cma_alloc_range() fires
+	 * trace_cma_alloc_start before several early returns (empty area,
+	 * count == 0, range check) that skip trace_cma_alloc_finish, so a stale
+	 * start timestamp is legitimate; without the vendor scheduler, forked
+	 * tasks also inherit it. The next finish pairs with the latest start.
+	 */
+	tsk->private = jiffies;
 }
 
 struct cma *cma;
