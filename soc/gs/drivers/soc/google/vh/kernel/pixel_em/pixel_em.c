@@ -44,10 +44,61 @@ extern void reset_scaling_freq(int cpu);
 extern struct pixel_em_profile **exynos_cpu_cooling_pixel_em_profile;
 #endif
 
+#if IS_ENABLED(CONFIG_VH_SCHED)
 extern int pixel_cpu_num;
 extern int pixel_cluster_num;
 extern int *pixel_cluster_start_cpu;
 extern bool pixel_cpu_init;
+
+static int init_pixel_cpu(void)
+{
+	return pixel_cpu_init ? 0 : -EPROBE_DEFER;
+}
+#else
+/*
+ * Without the Pixel vendor scheduler (android16-6.12 port), derive the CPU
+ * and cluster layout from CPU capacities, as Google's gs101 6.12 driver does:
+ * a new cluster starts wherever the capacity increases.
+ */
+static int pixel_cpu_num;
+static int pixel_cluster_num;
+static int *pixel_cluster_start_cpu;
+
+static int init_pixel_cpu(void)
+{
+	unsigned long cur_capacity = 0;
+	int cpu, j = 0;
+
+	if (pixel_cluster_start_cpu)
+		return 0;
+
+	pixel_cpu_num = cpumask_weight(cpu_possible_mask);
+	if (!pixel_cpu_num)
+		return -EPROBE_DEFER;
+
+	pixel_cluster_num = 0;
+	for_each_possible_cpu(cpu) {
+		if (arch_scale_cpu_capacity(cpu) > cur_capacity) {
+			cur_capacity = arch_scale_cpu_capacity(cpu);
+			pixel_cluster_num++;
+		}
+	}
+
+	pixel_cluster_start_cpu = kcalloc(pixel_cluster_num, sizeof(int), GFP_KERNEL);
+	if (!pixel_cluster_start_cpu)
+		return -ENOMEM;
+
+	cur_capacity = 0;
+	for_each_possible_cpu(cpu) {
+		if (arch_scale_cpu_capacity(cpu) > cur_capacity) {
+			pixel_cluster_start_cpu[j++] = cpu;
+			cur_capacity = arch_scale_cpu_capacity(cpu);
+		}
+	}
+
+	return 0;
+}
+#endif /* CONFIG_VH_SCHED */
 
 static struct mutex profile_list_lock;
 static LIST_HEAD(profile_list);
@@ -71,10 +122,11 @@ static void pixel_em_free_idle(struct pixel_idle_em *);
 
 static int pixel_em_init_cpu_layout(void)
 {
-	int i;
+	int i, ret;
 
-	if (!pixel_cpu_init)
-		return -EPROBE_DEFER;
+	ret = init_pixel_cpu();
+	if (ret)
+		return ret;
 
 	for (i = 0; i < pixel_cluster_num; i++) {
 		struct em_perf_domain *pd = em_cpu_get(pixel_cluster_start_cpu[i]);
@@ -1538,6 +1590,9 @@ static void pixel_em_drv_undo_probe(void)
 	pixel_em_free_idle(idle_profile);
 	idle_profile = NULL;
 	vendor_sched_pixel_idle_em = NULL;
+#else
+	kfree(pixel_cluster_start_cpu);
+	pixel_cluster_start_cpu = NULL;
 #endif
 
 	if (!platform_dev) {
