@@ -19,6 +19,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
+#include <linux/pm_qos.h>
 
 #include <trace/hooks/cpuidle.h>
 
@@ -1018,12 +1019,25 @@ static struct notifier_block exynos_cpu_pm_notifier = {
 	.priority = INT_MAX	/* we want to be called first */
 };
 
+static struct pm_qos_request exynos_cpupm_reboot_qos;
+
 static int exynos_cpupm_reboot_notifier(struct notifier_block *nb,
 					unsigned long event, void *v)
 {
 	switch (event) {
 	case SYS_POWER_OFF:
 	case SYS_RESTART:
+		/*
+		 * From here on CPU_PM_ENTER is vetoed, so the power-down idle
+		 * state always fails. Since v6.3 the CPU only becomes RCU-idle
+		 * inside the driver after cpu_pm_enter() succeeds, so CPUs
+		 * spinning on failed entries never report quiescent states and
+		 * grace periods crawl (rcu_barrier() in the WLAN reboot path
+		 * took >10 s and debug-reboot panicked). Pin the governor to
+		 * WFI first; the WFI path is RCU-idle in the cpuidle core.
+		 */
+		if (!cpu_latency_qos_request_active(&exynos_cpupm_reboot_qos))
+			cpu_latency_qos_add_request(&exynos_cpupm_reboot_qos, 0);
 		system_rebooting = true;
 		break;
 	}
