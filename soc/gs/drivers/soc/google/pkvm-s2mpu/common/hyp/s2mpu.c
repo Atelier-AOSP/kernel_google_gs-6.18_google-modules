@@ -422,6 +422,20 @@ static void __mpt_idmap_apply(struct s2mpu_hyp_dev *dev, struct mpt *mpt,
 	mpt_ops->apply_range(dev->va, mpt, first_gb, last_gb);
 	/* Initiate invalidation, completed in s2mpu_host_stage2_idmap_complete. */
 	__range_invalidation_init(dev, first_byte, last_byte);
+	dev->inval_pending = true;
+}
+
+/* Did the last prepare_range() change any L1 or L2 entry in this range? */
+static bool __mpt_range_changed(struct mpt *mpt, phys_addr_t first_byte,
+				phys_addr_t last_byte)
+{
+	unsigned int gb;
+
+	for_each_gb_in_range(gb, first_byte / SZ_1G, last_byte / SZ_1G) {
+		if (mpt->fmpt[gb].flags)
+			return true;
+	}
+	return false;
 }
 
 /*
@@ -437,6 +451,16 @@ static void s2mpu_host_stage2_idmap(struct kvm_hyp_iommu_domain *domain,
 		return;
 
 	mpt_ops->prepare_range(&host_mpt, start, end - 1, iommu_prot_to_mpt(prot));
+
+	/*
+	 * Only touch the hardware if the MPT actually changed. pKVM also calls
+	 * this for every lazily mapped host MMIO page, which the snapshot has
+	 * already made RW, including late in system suspend when always-on
+	 * S2MPUs can be clock-gated: an access then takes a synchronous
+	 * external abort at EL2 and the hypervisor panics.
+	 */
+	if (!__mpt_range_changed(&host_mpt, start, end - 1))
+		return;
 
 	for_each_s2mpu(dev) {
 		if (dev->flags & S2MPU_DENY_ALL)
@@ -456,8 +480,9 @@ static void s2mpu_host_stage2_idmap_complete(bool map)
 		if (dev->flags & S2MPU_DENY_ALL)
 			continue;
 		kvm_iommu_lock(&dev->iommu);
-		if (!dev->iommu.power_is_off)
+		if (dev->inval_pending && !dev->iommu.power_is_off)
 			__invalidation_barrier_complete(dev);
+		dev->inval_pending = false;
 		kvm_iommu_unlock(&dev->iommu);
 	}
 }
@@ -475,6 +500,7 @@ static int s2mpu_resume(struct kvm_hyp_iommu *iommu)
 	if (dev->flags & S2MPU_DENY_ALL)
 		return 0;
 
+	dev->inval_pending = false;
 	return initialize_with_mpt(dev, &host_mpt);
 }
 
@@ -489,6 +515,7 @@ static int s2mpu_suspend(struct kvm_hyp_iommu *iommu)
 	 * blocking state first, in case the host does not actually power it
 	 * down and continues issuing DMA traffic.
 	 */
+	dev->inval_pending = false;
 	return initialize_with_prot(dev, MPT_PROT_NONE);
 }
 
@@ -668,6 +695,7 @@ static int s2mpu_init_device(struct s2mpu_hyp_dev *dev)
 
 	dev->version = 0;
 	dev->context_cfg_valid_vid = 0;
+	dev->inval_pending = false;
 
 	/* Nothing is programmed until the host resumes the S2MPU. */
 	dev->iommu.power_is_off = true;

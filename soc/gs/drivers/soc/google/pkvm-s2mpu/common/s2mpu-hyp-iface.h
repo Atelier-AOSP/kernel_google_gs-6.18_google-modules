@@ -27,6 +27,7 @@ struct s2mpu_hyp_dev {
 	u32				flags;		/* S2MPU_HAS_SYNC, S2MPU_DENY_ALL */
 	u32				version;	/* EL2 private */
 	u32				context_cfg_valid_vid; /* EL2 private */
+	bool				inval_pending;	/* EL2 private: range inval issued */
 	u32				nr_syncs;
 	phys_addr_t			sync_pa[S2MPU_MAX_SYNCS]; /* S2 part of SysMMU_SYNC */
 	void __iomem			*sync_va[S2MPU_MAX_SYNCS];
