@@ -93,7 +93,7 @@ const unsigned long task_real_cap_window_ns = 16000000UL;
  *                          HELPER FUNCTIONS                         *
  *********************************************************************/
 
-static bool is_top_latency(u64 latency)
+static bool __maybe_unused is_top_latency(u64 latency)
 {
 	struct top_rt_runnable trr;
 	int cpu = raw_smp_processor_id();
@@ -105,7 +105,7 @@ static bool is_top_latency(u64 latency)
 	return latency > trr.rt_runnable[trr.min_idx].latency;
 }
 
-static void update_min_latency(struct task_struct *prev, struct task_struct *next, u64 latency)
+static void __maybe_unused update_min_latency(struct task_struct *prev, struct task_struct *next, u64 latency)
 {
 	u64 min_latency = -1LL;
 	struct rt_runnable *rt_runnable;
@@ -341,6 +341,13 @@ static void hook_irq_end(void *data, int irq, struct irqaction *action, int ret)
 						curr_max_irq, irq_usec) != curr_max_irq);
 }
 
+/*
+ * RT runnable-latency tracking lives in the Pixel vendor scheduler's per-task
+ * data (vendor_task_struct) and calls its update_task_real_cap(). The
+ * android16-6.12 port does not build VH_SCHED, so leave it out there; the
+ * runnable_stats sysfs report then simply stays empty.
+ */
+#if IS_ENABLED(CONFIG_VH_SCHED)
 void vh_sched_wakeup_pixel_mod(void *data, struct task_struct *p)
 {
 	struct vendor_task_struct *vp;
@@ -399,6 +406,7 @@ void vh_sched_switch_pixel_mod(void *data, bool preempt,
 	update_min_latency(prev, next, runnable_delta);
 
 }
+#endif /* CONFIG_VH_SCHED */
 
 /*******************************************************************
  *                       		SYSFS			   				   *
@@ -765,8 +773,10 @@ static ssize_t runnable_stats_enable_store(struct kobject *kobj,
 					  const char *buf,
 					  size_t count)
 {
+#if IS_ENABLED(CONFIG_VH_SCHED)
 	register_trace_sched_wakeup(vh_sched_wakeup_pixel_mod, NULL);
 	register_trace_sched_switch(vh_sched_switch_pixel_mod, NULL);
+#endif
 	return count;
 }
 
@@ -775,8 +785,10 @@ static ssize_t runnable_stats_disable_store(struct kobject *kobj,
 					  const char *buf,
 					  size_t count)
 {
+#if IS_ENABLED(CONFIG_VH_SCHED)
 	unregister_trace_sched_wakeup(vh_sched_wakeup_pixel_mod, NULL);
 	unregister_trace_sched_switch(vh_sched_switch_pixel_mod, NULL);
+#endif
 	return count;
 }
 
@@ -951,6 +963,7 @@ int perf_metrics_init(struct kobject *metrics_kobj)
 	for_each_possible_cpu(cpu) {
 		spin_lock_init(&per_cpu(rt_runnable_lock, cpu));
 	}
+#if IS_ENABLED(CONFIG_VH_SCHED)
 	ret = register_trace_sched_wakeup(vh_sched_wakeup_pixel_mod, NULL);
 	if (ret)
 		return ret;
@@ -958,6 +971,7 @@ int perf_metrics_init(struct kobject *metrics_kobj)
 	ret = register_trace_sched_switch(vh_sched_switch_pixel_mod, NULL);
 	if (ret)
 		return ret;
+#endif
 
 	pr_info("perf_metrics driver initialized! :D\n");
 	return ret;
