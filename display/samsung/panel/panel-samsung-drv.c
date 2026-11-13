@@ -4537,17 +4537,28 @@ static u64 exynos_panel_vsync_start_time_us(u32 te_us, u32 te_period_us)
 int exynos_panel_wait_for_vblank(struct exynos_panel *ctx)
 {
 	struct drm_crtc *crtc = NULL;
+	int ret = -ENODEV;
 
 	if (ctx->exynos_connector.base.state)
 		crtc = ctx->exynos_connector.base.state->crtc;
 
-	if (crtc && !drm_crtc_vblank_get(crtc)) {
-		drm_crtc_wait_one_vblank(crtc);
-		drm_crtc_vblank_put(crtc);
-		return 0;
+	if (crtc) {
+		ret = drm_crtc_vblank_get(crtc);
+		if (!ret) {
+			drm_crtc_wait_one_vblank(crtc);
+			drm_crtc_vblank_put(crtc);
+			return 0;
+		}
 	}
 
-	WARN_ON(1);
+	/*
+	 * Expected on the panel disable path, where the connector may already be
+	 * detached from its CRTC in the new atomic state or vblank already be
+	 * off; callers fall back to sleeping one frame. Was WARN_ON(1), which
+	 * dumped a stack trace on every display-off (android16-6.12 port).
+	 */
+	dev_info_ratelimited(ctx->dev, "%s: no vblank to wait for (%s, ret=%d), sleeping instead\n",
+			     __func__, crtc ? "vblank_get failed" : "no crtc", ret);
 	return -ENODEV;
 }
 EXPORT_SYMBOL_GPL(exynos_panel_wait_for_vblank);
