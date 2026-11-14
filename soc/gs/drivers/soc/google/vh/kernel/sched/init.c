@@ -6,6 +6,7 @@
  * Copyright 2020 Google LLC
  */
 
+#include <linux/slab.h>
 #include <linux/sched/cputime.h>
 #include <kernel/sched/sched.h>
 #include <linux/cpufreq.h>
@@ -316,9 +317,34 @@ static struct notifier_block vh_sched_pm_nb = {
 	.notifier_call = vh_sched_pm_notify,
 };
 
+/*
+ * [6.12 port] struct vendor_task_struct lives in the GKI dynamic task_struct
+ * vendor area (android_task_vendor_data() == p + 1), whose size comes from the
+ * android_arch_task_struct_size= command line parameter. If that area is too
+ * small, init_vendor_task_data() and every fork write past the end of the
+ * task_struct allocation and corrupt the neighbouring slab object (seen as a
+ * migration/N oops at ~0.4 s with android_arch_task_struct_size=512). Refuse
+ * to load instead, before any hook is registered.
+ */
+static int check_task_vendor_area(void)
+{
+	size_t area = ksize(current) - sizeof(struct task_struct);
+
+	if (area < sizeof(struct vendor_task_struct)) {
+		pr_err("[%s] task vendor area %zu bytes < vendor_task_struct %zu bytes; raise android_arch_task_struct_size\n",
+		       __func__, area, sizeof(struct vendor_task_struct));
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static int vh_sched_init(void)
 {
 	int ret;
+
+	ret = check_task_vendor_area();
+	if (ret)
+		return ret;
 
 	init_sched_params();
 
