@@ -774,6 +774,20 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	return freq;
 }
 
+
+/*
+ * [6.12 port] DL bandwidth for frequency selection. The fair dl_server keeps
+ * rq->dl.running_bw positive even when no SCHED_DEADLINE task is queued;
+ * Google's 6.12 code dropped that by zeroing running_bw on dequeue, which
+ * underflows the GKI's accounting. Ignore it here instead.
+ */
+static inline unsigned long cpu_bw_dl_pixel_mod(struct rq *rq)
+{
+	if (!rq->dl.dl_nr_running)
+		return 0;
+	return cpu_bw_dl(rq);
+}
+
 /*
  * This function computes an effective utilization for the given CPU, to be
  * used for frequency selection given the linear relation: f = u * f_max.
@@ -890,7 +904,7 @@ unsigned long schedutil_cpu_util_pixel_mod(int cpu, unsigned long util_cfs,
 	 * an interface. So, we only do the latter for now.
 	 */
 	if (type == FREQUENCY_UTIL)
-		util += cpu_bw_dl(rq);
+		util += cpu_bw_dl_pixel_mod(rq);
 
 	return min(max, util);
 }
@@ -902,7 +916,7 @@ sugov_get_util(struct sugov_cpu *sg_cpu)
 	unsigned long max = arch_scale_cpu_capacity(sg_cpu->cpu);
 
 	sg_cpu->max = max;
-	sg_cpu->bw_dl = cpu_bw_dl(rq);
+	sg_cpu->bw_dl = cpu_bw_dl_pixel_mod(rq);
 
 	sg_cpu->util = schedutil_cpu_util_pixel_mod(sg_cpu->cpu,
 			cpu_util_cfs_group_mod(sg_cpu->cpu), max, FREQUENCY_UTIL, NULL);
@@ -1081,7 +1095,7 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu, u64 time) { retur
  */
 static inline void ignore_dl_rate_limit(struct sugov_cpu *sg_cpu)
 {
-	if (cpu_bw_dl(cpu_rq(sg_cpu->cpu)) > sg_cpu->bw_dl)
+	if (cpu_bw_dl_pixel_mod(cpu_rq(sg_cpu->cpu)) > sg_cpu->bw_dl)
 		sg_cpu->sg_policy->limits_changed = true;
 }
 

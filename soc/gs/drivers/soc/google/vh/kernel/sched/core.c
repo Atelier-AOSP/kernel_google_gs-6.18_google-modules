@@ -464,13 +464,15 @@ void rvh_after_enqueue_task_pixel_mod(void *data, struct rq *rq, struct task_str
 void rvh_after_dequeue_task_pixel_mod(void *data, struct rq *rq, struct task_struct *p,
 				      int flags, bool *results)
 {
-	if (!rq->dl.dl_nr_running) {
-		/*
-		 * Workaround upstream bug due to dl_server causing bw to
-		 * always be positive even if there are no dl tasks.
-		 */
-		rq->dl.running_bw = 0;
-	}
+	/*
+	 * [6.12 port] Google zeroed rq->dl.running_bw here when no DL task was
+	 * queued, because the fair dl_server keeps it positive. That breaks the
+	 * GKI's own accounting: the server later subtracts its bandwidth again
+	 * and __sub_running_bw() underflows ("dl_rq->running_bw > old" WARN).
+	 * The intent (no dl_server bandwidth in the frequency request) is now
+	 * implemented where it is consumed, cpu_bw_dl_pixel_mod() in
+	 * cpufreq_gov.c.
+	 */
 }
 
 void rvh_set_cpus_allowed_by_task(void *data, const struct cpumask *cpu_valid_mask,
