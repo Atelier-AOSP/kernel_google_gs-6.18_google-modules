@@ -1,5 +1,6 @@
 ## SPDX-License-Identifier: GPL-2.0-only
 
+ccflags-y += -I$(src)/../../include
 EXTRA_CFLAGS += -I$(srctree)
 
 # vendor sched module

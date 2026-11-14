@@ -10,7 +10,8 @@
 #include <linux/cma.h>
 #include <linux/kobject.h>
 #include <linux/slab.h>
-#include "../../vh/include/sched.h"
+#include "sched.h"
+#include "cma.h"
 
 #define DEF_LATENCY_MID_BOUND_MS 1500
 #define DEF_LATENCY_LOW_BOUND_MS 500
@@ -49,14 +50,14 @@ void vh_cma_alloc_start(void *data, const char *name, unsigned long count,
 {
 	struct vendor_task_struct *tsk;
 
-	tsk = get_vendor_task_struct(current);
+	tsk = sched_get_vendor_task_struct(current);
 	/*
-	 * Overwrite instead of set_vendor_task_struct_private(), which warns on
-	 * a non-zero value. Since v6.12 Android's __cma_alloc_range() fires
-	 * trace_cma_alloc_start before several early returns (empty area,
+	 * [6.12 port] Overwrite instead of sched_set_vendor_task_struct_private(),
+	 * which WARNs on a non-zero value. Android 6.12's __cma_alloc_range()
+	 * fires trace_cma_alloc_start before several early returns (empty area,
 	 * count == 0, range check) that skip trace_cma_alloc_finish, so a stale
-	 * start timestamp is legitimate; without the vendor scheduler, forked
-	 * tasks also inherit it. The next finish pairs with the latest start.
+	 * start timestamp is legitimate. The next finish pairs with the latest
+	 * start.
 	 */
 	tsk->private = jiffies;
 }
@@ -90,8 +91,8 @@ void vh_cma_alloc_finish(void *data, const char *name, unsigned long pfn,
 	struct vendor_task_struct *tsk;
 	unsigned long old_ts;
 
-	tsk = get_vendor_task_struct(current);
-	old_ts = get_and_reset_vendor_task_struct_private(tsk);
+	tsk = sched_get_vendor_task_struct(current);
+	old_ts = sched_get_and_reset_vendor_task_struct_private(tsk);
 
 	delta = jiffies_to_msecs(jiffies - old_ts);
 	WARN_ON_ONCE(delta < 0);

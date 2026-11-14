@@ -8,6 +8,8 @@
 
 #include <linux/mm.h>
 
+#include "page_alloc.h"
+
 DECLARE_PER_CPU(unsigned long, pgalloc_costly_order);
 DECLARE_PER_CPU(unsigned long, pgalloc_atomic_order_zero);
 DECLARE_PER_CPU(unsigned long, pgalloc_atomic_highorder_noncostly);

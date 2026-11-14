@@ -1,6 +1,7 @@
 ## SPDX-License-Identifier: GPL-2.0-only
 
 ccflags-y += -I$(srctree)/drivers/dma-buf
+ccflags-y += -I$(src)/../../vh/include -I$(src)/../../../../dma-buf/heaps/samsung
 ccflags-y += -I$(ROOT_DIR)/private/google-modules/trusty/include
 
 # vendor hook for mm

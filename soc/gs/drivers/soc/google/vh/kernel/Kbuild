@@ -1,6 +1,7 @@
 ## SPDX-License-Identifier: GPL-2.0-only
 
 # vh/kernel/sched
+ccflags-y += -I$(src)/../include
 obj-$(CONFIG_VH_SCHED)	+= sched/
 
 # systrace

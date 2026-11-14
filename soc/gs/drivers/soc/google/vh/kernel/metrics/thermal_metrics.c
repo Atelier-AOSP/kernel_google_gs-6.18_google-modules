@@ -15,6 +15,8 @@
 #include <linux/slab.h>
 #include <soc/google/thermal_metrics.h>
 
+#include "thermal_metrics.h"
+
 #define MAX_NUM_SUPPORTED_THERMAL_ZONES        36
 #define MAX_NUM_SUPPORTED_THERMAL_GROUPS       10
 #define ABNORMAL_UEVENT_TIMEOUT_SEC            1200
@@ -244,8 +246,8 @@ static int get_tz_cb_stats(tr_handle instance, struct temperature_residency_stat
  * Rate limit logging to have time gap of at least ABNORMAL_UEVENT_TIMEOUT_SEC
  * between uevents of same abnormality_type.
  */
-int report_thermal_abnormal_uevent(tr_handle instance, enum abnormality_type type,
-					 int temp)
+static int report_thermal_abnormal_uevent(tr_handle instance, enum abnormality_type type,
+					  int temp)
 {
 	time64_t now = ktime_get_seconds();
 	struct kobject mod_kobj = (((struct module *)(THIS_MODULE))->mkobj).kobj;

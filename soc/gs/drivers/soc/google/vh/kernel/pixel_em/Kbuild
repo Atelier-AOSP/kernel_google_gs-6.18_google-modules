@@ -1,4 +1,5 @@
 ## SPDX-License-Identifier: GPL-2.0-only
 
+ccflags-y += -I$(src)/../../include
 obj-$(CONFIG_PIXEL_EM)	+= pixel_em.o
 
