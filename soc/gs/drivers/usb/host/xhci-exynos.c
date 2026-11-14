@@ -11,10 +11,10 @@
  *		http://www.samsung.com
  */
 
-#include <core/hub.h> /* $(srctree)/drivers/usb/core/hub.h */
-#include <host/xhci.h> /* $(srctree)/drivers/usb/host/xhci.h */
-#include <host/xhci-mvebu.h> /* $(srctree)/drivers/usb/host/xhci-mvebu.h */
-#include <host/xhci-plat.h> /* $(srctree)/drivers/usb/host/xhci-plat.h */
+#include <drivers/usb/core/hub.h>
+#include <drivers/usb/host/xhci.h>
+#include <drivers/usb/host/xhci-mvebu.h>
+#include <drivers/usb/host/xhci-plat.h>
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
@@ -30,9 +30,10 @@
 #include <linux/usb/dwc3-exynos.h>
 #include <linux/usb/of.h>
 #include <linux/usb/phy.h>
+#include <linux/usb/xhci-sideband.h>
 
 #include <soc/google/exynos-cpupm.h>
-#include <trace/hooks/usb.h>
+#include <soc/google/exynos-usbdrd.h>
 
 #include "xhci-exynos.h"
 
@@ -178,7 +179,7 @@ static int xhci_exynos_start(struct usb_hcd *hcd)
 	return xhci_run(hcd);
 }
 
-void xhci_exynos_portsc_power_off(struct xhci_hcd_exynos *exynos, u32 on, u32 prt)
+static void xhci_exynos_portsc_power_off(struct xhci_hcd_exynos *exynos, u32 on, u32 prt)
 {
 	struct xhci_hcd_exynos	*xhci_exynos = exynos;
 	void __iomem *portsc = xhci_exynos->usb3_portsc;
@@ -225,7 +226,7 @@ void xhci_exynos_portsc_power_off(struct xhci_hcd_exynos *exynos, u32 on, u32 pr
 	spin_unlock(&xhci_exynos->xhcioff_lock);
 }
 
-int xhci_exynos_port_power_set(struct xhci_hcd_exynos *exynos, u32 on, u32 prt)
+static int xhci_exynos_port_power_set(struct xhci_hcd_exynos *exynos, u32 on, u32 prt)
 {
 	struct xhci_hcd_exynos	*xhci_exynos = exynos;
 
@@ -237,7 +238,6 @@ int xhci_exynos_port_power_set(struct xhci_hcd_exynos *exynos, u32 on, u32 prt)
 	dev_info(xhci_exynos->dev, "%s, usb3_portsc is NULL\n", __func__);
 	return -EIO;
 }
-EXPORT_SYMBOL_GPL(xhci_exynos_port_power_set);
 
 /*
  * Query the suspend capability from the USB descriptors
@@ -654,51 +654,6 @@ static void xhci_exynos_pm_runtime_init(struct device *dev)
 	init_waitqueue_head(&dev->power.wait_queue);
 }
 
-static struct xhci_exynos_ops *xhci_vendor_ops;
-
-int xhci_exynos_register_offload_ops(struct xhci_exynos_ops *offload_ops)
-{
-	if (offload_ops == NULL)
-		return -EINVAL;
-
-	xhci_vendor_ops = offload_ops;
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(xhci_exynos_register_offload_ops);
-
-static int xhci_vendor_offload_init(struct device *dev, struct xhci_hcd *xhci)
-{
-	struct xhci_exynos_ops *ops = xhci_vendor_ops;
-
-	if (ops && ops->offload_init)
-		return ops->offload_init(xhci);
-
-	dev_err(dev, "Offload hooks or init function is null!\n");
-	return -EINVAL;
-}
-
-static void xhci_vendor_offload_cleanup(struct device *dev, struct xhci_hcd *xhci)
-{
-	struct xhci_exynos_ops *ops = xhci_vendor_ops;
-
-	if (ops && ops->offload_cleanup)
-		ops->offload_cleanup(xhci);
-	else
-		dev_err(dev, "Offload hooks or cleanup function is null!\n");
-}
-
-static int xhci_vendor_offload_setup(struct device *dev, struct xhci_hcd *xhci)
-{
-	struct xhci_exynos_ops *ops = xhci_vendor_ops;
-
-	if (ops && ops->offload_setup)
-		return ops->offload_setup(xhci);
-
-	dev_err(dev, "Offload hooks or setup function is null!\n");
-	return -EINVAL;
-}
-
 static int xhci_exynos_probe(struct platform_device *pdev)
 {
 	struct device		*parent = pdev->dev.parent;
@@ -797,6 +752,7 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 	xhci_exynos->usb3_portsc = hcd->regs + PORTSC_OFFSET;
 	xhci_exynos->is_otg_only = 1;
 	xhci_exynos->port_state = PORT_EMPTY;
+	xhci_exynos->sideband_at_suspend = 0;
 	xhci_exynos->usb3_phy_control = true;
 
 	xhci_exynos_register_notify();
@@ -861,6 +817,8 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 
 		device_property_read_u32(tmpdev, "imod-interval-ns",
 					 &xhci->imod_interval);
+		device_property_read_u16(tmpdev, "num-hc-interrupters",
+					 &xhci->max_interrupters);
 	}
 
 	hcd->usb_phy = devm_usb_get_phy_by_phandle(sysdev, "usb-phy", 0);
@@ -885,10 +843,6 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = xhci_vendor_offload_init(&pdev->dev, xhci);
-	if (ret)
-		goto disable_usb_phy;
-
 	xhci_exynos->main_wakelock = main_wakelock;
 	xhci_exynos->shared_wakelock = shared_wakelock;
 
@@ -907,10 +861,6 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 
 	xhci_exynos_early_stop_set(xhci_exynos, hcd);
 	xhci_exynos_early_stop_set(xhci_exynos, xhci->shared_hcd);
-
-	ret = xhci_vendor_offload_setup(&pdev->dev, xhci);
-	if (ret)
-		goto disable_usb_phy;
 
 	device_enable_async_suspend(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
@@ -989,8 +939,6 @@ remove_hcd:
 	usb_phy_shutdown(hcd->usb_phy);
 	usb_remove_hcd(hcd);
 
-	xhci_vendor_offload_cleanup(&dev->dev, xhci);
-
 	devm_iounmap(&dev->dev, hcd->regs);
 	usb_put_hcd(shared_hcd);
 
@@ -1018,16 +966,14 @@ static int __maybe_unused xhci_exynos_suspend(struct device *dev)
 	struct xhci_hcd_exynos *xhci_exynos = dev_get_drvdata(dev);
 	struct usb_hcd	*hcd = xhci_exynos->hcd;
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	int ret = 0;
-	int ret_phy = 0;
-	bool bypass = false;
-	struct usb_device *udev = hcd->self.root_hub;
-	pm_message_t msg;
+	int ret;
+	int ret_phy;
 
-	msg.event = 0;
-	trace_android_rvh_usb_dev_suspend(udev, msg, &bypass);
-	if (bypass)
+	if (xhci_sideband_check(hcd)) {
+		xhci_exynos->sideband_at_suspend = 1;
+		dev_dbg(dev, "sideband instance active, skip suspend.\n");
 		return 0;
+	}
 
 	if (xhci_exynos->port_state == PORT_USB2 || (xhci_exynos->port_state == PORT_HUB)) {
 		ret_phy = exynos_usbdrd_phy_vendor_set(xhci_exynos->phy_usb2, 1, 0);
@@ -1060,16 +1006,14 @@ static int __maybe_unused xhci_exynos_resume(struct device *dev)
 	struct xhci_hcd_exynos *xhci_exynos = dev_get_drvdata(dev);
 	struct usb_hcd	*hcd = xhci_exynos->hcd;
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	int ret = 0;
-	int ret_phy = 0;
-	bool bypass = false;
-	struct usb_device *udev = hcd->self.root_hub;
-	pm_message_t msg;
+	int ret;
+	int ret_phy;
 
-	msg.event = 0;
-	trace_android_vh_usb_dev_resume(udev, msg, &bypass);
-	if (bypass)
+	if (xhci_exynos->sideband_at_suspend) {
+		xhci_exynos->sideband_at_suspend = 0;
+		dev_dbg(dev, "sideband instance active, skip resume.\n");
 		return 0;
+	}
 
 	ret = xhci_priv_resume_quirk(hcd);
 	if (ret)
