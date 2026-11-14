@@ -8,6 +8,7 @@ KBUILD_OPTIONS	+= CONFIG_AOC_DRIVER=m
 EXTRA_CFLAGS	+= -I$(ROOT_DIR)/private/google-modules/aoc_ipc
 EXTRA_CFLAGS	+= -I$(ROOT_DIR)/private/google-modules/aoc
 EXTRA_CFLAGS	+= -I$(KERNEL_SRC)/sound/usb
+EXTRA_CFLAGS	+= -I$(KERNEL_SRC)/drivers/usb/host
 EXTRA_CFLAGS	+= -I$(ROOT_DIR)/private/google-modules/amplifiers/audiometrics
 EXTRA_CFLAGS	+= -I$(ROOT_DIR)/private/google-modules/display/samsung/dp_audio
 EXTRA_SYMBOLS	+= $(COMMON_OUT_DIR)/private/google-modules/aoc/Module.symvers

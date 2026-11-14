@@ -34,6 +34,7 @@
 #include "../aoc-interface.h"
 #include "google-aoc-enum.h"
 #include "usbaudio.h"
+#include "xhci.h"
 #include "audiometrics.h"
 
 #define AOC_SND_CARD "aoc-snd-card"
@@ -247,6 +248,26 @@ enum { CHRE_GAIN_PATH_PDM = 0, CHRE_GAIN_PATH_AEC, CHRE_GAIN_PATH_TOT };
 
 enum { AOC_CHIRP_INTERVAL = 0, AOC_CHIRP_ENABLE, AOC_CHIRP_MODE, AOC_CHIRP_GAIN };
 
+/* USB audio offload (Google android16-6.12, xHCI sideband) */
+enum usb_audio_status {
+	USB_CONNECT = 0,
+	USB_DISCONNECT,
+	USB_SUSPEND,
+	USB_RESUME
+};
+
+enum usb_ep_dir {
+	EP_IN = 0,
+	EP_OUT,
+	EP_NONE
+};
+
+enum usb_offload_state {
+	USB_OFFLOAD_STATE_DISABLED = 0,	/* USB offloading is disabled */
+	USB_OFFLOAD_STATE_LEGACY,	/* Event ring created by legacy way */
+	USB_OFFLOAD_STATE_SIDEBAND,	/* Event ring created by xhci sideband driver */
+};
+
 enum PCM_OPTION_INDEX {
 	PCM_OPTION_INDEX_BIT_DEPTH,   /* Sample bit depth of the stream */
 	PCM_OPTION_INDEX_FORMAT,      /* Sample format of the stream */
@@ -327,6 +348,8 @@ struct aoc_chip {
 	int usb_card;
 	int usb_device;
 	int usb_direction;
+	uint8_t offload_state;
+	bool usb_skip_event_ring;
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
 	int mel_enable;
 #endif
@@ -532,11 +555,20 @@ int aoc_set_sink_mode(struct aoc_chip *chip, int sink, int mode);
 
 int aoc_set_usb_config(struct aoc_chip *chip);
 int aoc_set_usb_config_v2(struct aoc_chip *chip);
+int aoc_set_isoc_tr_info(struct aoc_chip *chip, u16 ep_id, u16 dir, struct xhci_ring *ep_ring);
 int aoc_set_usb_feedback_endpoint(struct aoc_chip *chip, struct usb_device *udev,
 		    struct usb_host_endpoint *ep);
-int aoc_set_usb_offload_state(struct aoc_chip *chip, bool offload_enable);
+int aoc_set_usb_offload_state(struct aoc_chip *chip, uint8_t offload_state);
 
-int aoc_set_usb_mem_config(struct aoc_chip *achip);
+int usb_get_endpoint_dir(int aoc_dir);
+int aoc_setup_event_ring(struct aoc_chip *achip, struct usb_device *udev,
+			 int intr_num, bool enable);
+int aoc_setup_transfer_ring(struct aoc_chip *achip, int card_num, int aoc_dir,
+			    struct usb_host_endpoint *ep);
+int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
+			  unsigned int direction);
+int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
+			    unsigned int direction);
 
 int aoc_multichannel_processor_switch_set(struct aoc_chip *achip, int value);
 
@@ -616,13 +648,8 @@ int aoc_audio_mic_mask_set(struct aoc_chip *chip, bool is_voice);
 
 int aoc_audio_us_record(struct aoc_chip *chip, bool enable);
 
-bool aoc_alsa_usb_callback_register(
-	void (*callback)(struct usb_device *, struct usb_host_endpoint *));
-void aoc_alsa_usb_callback_unregister(void);
-
 void usb_audio_offload_connect(struct snd_usb_audio *chip);
 void usb_audio_offload_disconnect(struct snd_usb_audio *chip);
-void usb_audio_offload_suspend(struct usb_interface *intf, pm_message_t message);
 
 bool aoc_alsa_dp_playback_enabled(void);
 #endif

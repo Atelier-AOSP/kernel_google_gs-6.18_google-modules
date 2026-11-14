@@ -1255,6 +1255,11 @@ static int aoc_path_put(uint32_t ep_id, uint32_t hw_id,
 
 	if (enable) {
 		set_bit(ep_idx, port_array[hw_idx].fe_put_mask);
+		if (hw_idx == PORT_USB_RX || hw_idx == PORT_USB_TX)
+			aoc_usb_setup_config(chip,
+					     bitmap_weight(port_array[hw_idx].fe_put_mask,
+							   IDX_FE_MAX),
+					     hw_id & AOC_TX ? 1 : 0);
 		mutex_lock(&chip->audio_mutex);
 		aoc_audio_path_open(chip, ep_id, hw_id, port_array[hw_idx].on);
 		mutex_unlock(&chip->audio_mutex);
@@ -1263,6 +1268,11 @@ static int aoc_path_put(uint32_t ep_id, uint32_t hw_id,
 		mutex_lock(&chip->audio_mutex);
 		aoc_audio_path_close(chip, ep_id, hw_id, port_array[hw_idx].on);
 		mutex_unlock(&chip->audio_mutex);
+		if (hw_idx == PORT_USB_RX || hw_idx == PORT_USB_TX)
+			aoc_usb_cleanup_config(chip,
+					       bitmap_weight(port_array[hw_idx].fe_put_mask,
+							     IDX_FE_MAX),
+					       hw_id & AOC_TX ? 1 : 0);
 	}
 
 	mutex_unlock(&path_mutex);

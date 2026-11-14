@@ -2040,7 +2040,11 @@ static int usb_cfg_v2_ctl_set(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 		chip->usb_direction = val;
 		break;
 	case USB_MEM_CFG:
-		aoc_set_usb_mem_config(chip);
+		/*
+		 * Google android16-6.12: USB offload endpoints are set up when the
+		 * USB audio path is enabled (aoc_usb_setup_config() from
+		 * aoc_path_put()); the HAL still writes this control.
+		 */
 		break;
 	default:
 		err = -EINVAL;

@@ -1242,14 +1242,38 @@ int aoc_set_usb_feedback_endpoint(struct aoc_chip *chip, struct usb_device *udev
 	return err;
 }
 
-int aoc_set_usb_offload_state(struct aoc_chip *chip, bool offload_enable)
+int aoc_set_isoc_tr_info(struct aoc_chip *chip, u16 ep_id, u16 dir, struct xhci_ring *ep_ring)
+{
+	struct CMD_USB_CONTROL_SET_ISOC_TR_INFO cmd;
+	int err = 0;
+
+	AocCmdHdrSet(&(cmd.parent), CMD_USB_CONTROL_SET_ISOC_TR_INFO_ID, sizeof(cmd));
+
+	cmd.ep_id = ep_id;
+	cmd.dir = dir;
+	cmd.type = ep_ring->type;
+	cmd.num_segs = ep_ring->num_segs;
+	cmd.seg_ptr = ep_ring->first_seg->dma;
+	cmd.max_packet = ep_ring->bounce_buf_len;
+	cmd.cycle_state = ep_ring->cycle_state;
+	cmd.num_trbs_free = ep_ring->num_trbs_free;
+
+	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd,
+				sizeof(cmd), (uint8_t *)&cmd, chip);
+	if (err < 0)
+		pr_err("ERR:%d in aoc set usb isoc tr info fail\n", err);
+
+	return err;
+}
+
+int aoc_set_usb_offload_state(struct aoc_chip *chip, uint8_t offload_state)
 {
 	struct CMD_USB_CONTROL_SET_OFFLOAD_STATE cmd;
 	int err = 0;
 
 	AocCmdHdrSet(&(cmd.parent), CMD_USB_CONTROL_SET_OFFLOAD_STATE_ID, sizeof(cmd));
 
-	cmd.offloading = offload_enable;
+	cmd.offloading = offload_state;
 
 	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd, sizeof(cmd), (uint8_t *)&cmd,
 		chip);

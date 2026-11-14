@@ -3,10 +3,11 @@
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 M ?= $(shell pwd)
 
-KBUILD_OPTIONS	+= CONFIG_AOC_DRIVER=m
+KBUILD_OPTIONS	+= CONFIG_AOC_DRIVER=m CONFIG_AOC_USB_AUDIO_OFFLOAD=y
 
 EXTRA_SYMBOLS	+= $(COMMON_OUT_DIR)/private/google-modules/aoc/Module.symvers
 EXTRA_SYMBOLS	+= $(COMMON_OUT_DIR)/private/google-modules/aoc/alsa/Module.symvers
+EXTRA_SYMBOLS	+= $(COMMON_OUT_DIR)/private/google-modules/bms/misc/Module.symvers
 
 include $(ROOT_DIR)/private/google-modules/soc/gs/Makefile.include
 

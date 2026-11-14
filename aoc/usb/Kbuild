@@ -3,11 +3,20 @@
 # ASoC-based USB driver
 #
 
-ccflags-y += -I$(srctree)/drivers/usb/host
+ccflags-y += -I$(srctree)/drivers/usb -I$(srctree)/drivers/usb/host
 ccflags-y += -I$(srctree)/sound/usb
 ccflags-y += -I$(ROOT_DIR)/private/google-modules/aoc_ipc
 ccflags-y += -I$(ROOT_DIR)/private/google-modules/aoc
+ccflags-y += -I$(ROOT_DIR)/private/google-modules/aoc/alsa
 ccflags-y += -I$(ROOT_DIR)/private/google-modules/soc/gs/drivers/usb/host
 
 obj-$(CONFIG_AOC_DRIVER)	+= aoc_usb_driver.o
-aoc_usb_driver-objs		:= aoc_usb_dev.o xhci_hooks_impl_whi.o usb_hooks_impl_whi.o
+aoc_usb_driver-objs		:= aoc_usb_dev.o
+
+# USB audio offload to AoC over the xHCI sideband API (Google android16-6.12).
+# Our AoC modules take their options from KBUILD_OPTIONS (Makefile), not
+# Kconfig, so turn the option into the C macro the sources test.
+ifeq ($(CONFIG_AOC_USB_AUDIO_OFFLOAD),y)
+ccflags-y			+= -DCONFIG_AOC_USB_AUDIO_OFFLOAD=1
+aoc_usb_driver-objs		+= usb_offload_helper.o
+endif
