@@ -132,6 +132,7 @@ struct vendor_task_struct {
 	bool is_binder_task;
 	bool in_feec;
 	bool vendor_boost;
+	bool adpf_counted;		/* [6.12 port] counted in vrq->num_adpf_tasks, rq lock */
 	unsigned int state_dequeued;
 
 	/* parameters for inheritance */

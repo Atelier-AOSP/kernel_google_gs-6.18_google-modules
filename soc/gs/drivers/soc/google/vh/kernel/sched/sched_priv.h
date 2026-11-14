@@ -1361,10 +1361,18 @@ void check_cancel_protect_slice(struct cfs_rq *cfs_rq, struct sched_entity *pse,
 static inline void inc_adpf_counter(struct task_struct *p, struct rq *rq)
 {
 	struct vendor_rq_struct *vrq;
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
 
-	if (rt_task(p))
+	/*
+	 * [6.12 port] Track per task whether it is counted, so the decrement
+	 * pairs with this increment even if the task's ADPF status (it can be
+	 * inherited) or scheduling class changed while it was queued; otherwise
+	 * the count leaked and tripped the newidle balance sanity check.
+	 */
+	if (rt_task(p) || vp->adpf_counted)
 		return;
 
+	vp->adpf_counted = true;
 	vrq = get_vendor_rq_struct(rq);
 
 	atomic_inc(&vrq->num_adpf_tasks);
@@ -1387,10 +1395,13 @@ static inline void inc_adpf_counter(struct task_struct *p, struct rq *rq)
 static inline void dec_adpf_counter(struct task_struct *p, struct rq *rq)
 {
 	struct vendor_rq_struct *vrq = get_vendor_rq_struct(rq);
+	struct vendor_task_struct *vp = get_vendor_task_struct(p);
 
-	if (rt_task(p))
+	/* [6.12 port] only undo what inc_adpf_counter() counted */
+	if (!vp->adpf_counted)
 		return;
 
+	vp->adpf_counted = false;
 	vrq = get_vendor_rq_struct(rq);
 
 	/*

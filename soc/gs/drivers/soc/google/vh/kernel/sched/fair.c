@@ -3072,8 +3072,16 @@ void sched_newidle_balance_pixel_mod(void *data, struct rq *this_rq, struct rq_f
 	struct vendor_rq_struct *this_vrq = get_vendor_rq_struct(this_rq);
 	struct vendor_rq_struct *src_vrq;
 
-	if (SCHED_WARN_ON(atomic_read(&this_vrq->num_adpf_tasks)))
+	if (atomic_read(&this_vrq->num_adpf_tasks)) {
+		/*
+		 * [6.12 port] With delayed dequeue (EEVDF) a sleeping ADPF task
+		 * can stay queued (sched_delayed) and counted until its final
+		 * DEQUEUE_DELAYED, so a non-zero count on an idle rq is expected
+		 * then. Only warn if there is no delayed task to explain it.
+		 */
+		SCHED_WARN_ON(!this_rq->cfs.h_nr_delayed);
 		atomic_set(&this_vrq->num_adpf_tasks, 0);
+	}
 
 	if (static_branch_likely(&enable_ptick))
 		return;
@@ -3365,8 +3373,8 @@ void rvh_dequeue_task_fair_pixel_mod(void *data, struct rq *rq, struct task_stru
 		vp->last_dequeue = sched_clock();
 	}
 
-	if (get_adpf(p, true))
-		dec_adpf_counter(p, rq);
+	/* [6.12 port] dec_adpf_counter() only undoes a counted enqueue */
+	dec_adpf_counter(p, rq);
 
 #if IS_ENABLED(CONFIG_USE_VENDOR_GROUP_UTIL)
 	if (likely(sched_feat(UTIL_EST))) {
