@@ -8,13 +8,18 @@
 #include <linux/power_supply.h>
 #include <linux/pm_qos.h>
 #include <linux/thermal.h>
+#include <linux/hrtimer.h>
 #include <linux/workqueue.h>
 #include <soc/google/exynos_pm_qos.h>
+#include <dt-bindings/power/s2mpg1x-power.h>
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
 #include <dt-bindings/soc/google/zumapro-bcl.h>
+#include <linux/mfd/samsung/rtc-s2mpg14.h>
 #elif IS_ENABLED(CONFIG_SOC_GS101)
+#include <linux/mfd/samsung/rtc-s2mpg10.h>
 #include <dt-bindings/soc/google/gs101-bcl.h>
 #elif IS_ENABLED(CONFIG_SOC_GS201)
+#include <linux/mfd/samsung/rtc-s2mpg12.h>
 #include <dt-bindings/soc/google/gs201-bcl.h>
 #endif
 #include <trace/events/power.h>
@@ -36,7 +41,7 @@
 #define bcl_cb_clr_irq(bcl, v) (((bcl)->ifpmic == MAX77759) ? \
         max77759_clr_irq(bcl, v) : max77779_clr_irq(bcl, v))
 #define bcl_vimon_read(bcl) (((bcl)->ifpmic == MAX77759) ? \
-       max77759_vimon_read(bcl) : max77779_vimon_read(bcl))
+	max77759_vimon_read(bcl) : max77779_vimon_read(bcl))
 
 #define DELTA_5MS			(5 * NSEC_PER_MSEC)
 #define DELTA_10MS			(10 * NSEC_PER_MSEC)
@@ -44,14 +49,18 @@
 #define MILLI_TO_MICRO			1000
 #define IRQ_ENABLE_DELAY_MS		50
 #define NOT_USED			9999
+#define TIMEOUT_1S			1000
 #define TIMEOUT_5S			5000
 #define TIMEOUT_5000US			5000
 #define TIMEOUT_10000US			10000
 #define TIMEOUT_10MS			10
+#define TIMEOUT_30MS			30
+#define TIMEOUT_3S			3000
 #define TIMEOUT_5MS			5
 #define TIMEOUT_1MS			1
 #define DATA_LOGGING_TIME_MS		48
 #define DATA_LOGGING_NUM		50
+#define DATA_LOGGING_COOL_DOWN_TIME_MS	300
 #define HEAVY_MITIGATION_MODULES_NUM	3
 #define MITIGATION_INPUT_DELIM		","
 #define MITIGATION_PRINT_BUF_SIZE  	256
@@ -68,26 +77,45 @@
 #define DEFAULT_VDROOP_INT_MASK 0xDF /* Only BATOILO is passed */
 #define DEFAULT_INTB_MASK 0x0 /* All IRQs are passed */
 #define DEFAULT_SMPL 0xCB /* 3.2V, 200mV HYS, 38us debounce */
-
+#define DEFAULT_VIMON_PWR_LOOP_CNT 0
+#define DEFAULT_VIMON_PWR_LOOP_THRESH 20000
+#define MAX77779_VIMON_NV_PRE_LSB 78122
+#define MAX77779_VIMON_NA_PRE_LSB 781250
+#define BAT_KTIMER_LIMIT_MS 34
+#define LAST_CURR_RD_CNT_MAX 10
+#define BATOILO_QBAT_OPEN_DELAY 0x9 /* 48ms */
+#define BATOILO_QBAT_OPEN_DISABLE 0x0
+#define OCP_TIMEOUT_TRIG_FAULT_OUT_MASK BIT(4)
+#define USB_ENABLE_MASK BIT(0)
+#define TEST_MODE2_FAULT_OUT_MASK BIT(2)
+#define RTC_SCRATCH_WRITE_RETRY 5
+#define FAULT_OUT_SHUTDOWN_RETRY 10
+#define DVFS_RELEASE_TIME_MS_MAX 10000
 
 #if IS_ENABLED(CONFIG_SOC_GS101)
 #define MAIN_OFFSRC1 S2MPG10_PM_OFFSRC
 #define MAIN_OFFSRC2 S2MPG10_PM_OFFSRC
 #define SUB_OFFSRC1 S2MPG11_PM_OFFSRC
 #define SUB_OFFSRC2 S2MPG11_PM_OFFSRC
+#define RTC_SCRATCH1 S2MPG10_RTC_NONCE1_7
 #define MAIN_PWRONSRC S2MPG10_PM_PWRONSRC
+#define COMMON_TEST_MODE2_ADDR S2MPG10_COMMON_TEST_MODE2
 #elif IS_ENABLED(CONFIG_SOC_GS201)
 #define MAIN_OFFSRC1 S2MPG12_PM_OFFSRC1
 #define MAIN_OFFSRC2 S2MPG12_PM_OFFSRC2
 #define SUB_OFFSRC1 S2MPG13_PM_OFFSRC
 #define SUB_OFFSRC2 S2MPG13_PM_OFFSRC
+#define RTC_SCRATCH1 S2MPG12_RTC_SCRATCH1
 #define MAIN_PWRONSRC S2MPG12_PM_PWRONSRC
+#define COMMON_TEST_MODE2_ADDR S2MPG12_COMMON_TEST_MODE2
 #elif IS_ENABLED(CONFIG_SOC_ZUMA)
 #define MAIN_OFFSRC1 S2MPG14_PM_OFFSRC1
 #define MAIN_OFFSRC2 S2MPG14_PM_OFFSRC2
 #define SUB_OFFSRC1 S2MPG15_PM_OFFSRC1
 #define SUB_OFFSRC2 S2MPG15_PM_OFFSRC2
+#define RTC_SCRATCH1 S2MPG14_RTC_SCRATCH1
 #define MAIN_PWRONSRC S2MPG14_PM_PWRONSRC
+#define COMMON_TEST_MODE2_ADDR S2MPG14_COMMON_TEST_MODE2
 #endif
 
 /* SMPL zone name changed after gs201 */
@@ -166,6 +194,12 @@ enum IFPMIC {
 	MAX77779
 };
 
+enum PMIC_SIG_PARAM {
+	SIG_LEVEL,
+	SIG_REL_TIME,
+	SIG_DEGLITCH_TIME,
+};
+
 struct irq_duration_stats {
 	atomic_t lt_5ms_count;
 	atomic_t bt_5ms_10ms_count;
@@ -199,6 +233,13 @@ enum MPMM_SOURCE {
 	MID,
 	BIG,
 	MPMMEN
+};
+
+enum RAMP_LEVEL {
+	RAMP_LEVEL_1,
+	RAMP_LEVEL_2,
+	RAMP_LEVEL_3,
+	RAMP_LEVEL_MAX,
 };
 
 struct qos_throttle_limit {
@@ -239,7 +280,7 @@ struct bcl_zone {
 	int bcl_prev_lvl;
 	int bcl_cur_lvl;
 	int bcl_lvl;
-	struct gpio_desc *bcl_pin;
+	u16 bcl_pin;
 	int bcl_irq;
 	int irq_type;
 	int polarity;
@@ -257,6 +298,7 @@ struct bcl_core_conf {
 	unsigned int con_heavy;
 	unsigned int con_light;
 	unsigned int clkdivstep;
+	unsigned int clkdivstep_last;
 	unsigned int vdroop_flt;
 	unsigned int clk_stats;
 	unsigned int clk_out;
@@ -317,12 +359,10 @@ struct bcl_mitigation_conf {
 	u32 threshold;
 };
 
-#if IS_ENABLED(CONFIG_SOC_ZUMAPRO)
 struct bcl_vimon_intf {
 	uint16_t data[VIMON_BUF_SIZE];
 	size_t count;
 };
-#endif
 
 struct bcl_device {
 	struct device *device;
@@ -335,37 +375,46 @@ struct bcl_device {
 	struct power_supply *batt_psy;
 	struct power_supply *otg_psy;
 
+	struct hrtimer hr_timer;
+
 	struct notifier_block psy_nb;
 	struct bcl_zone *zone[TRIGGERED_SOURCE_MAX];
 	struct delayed_work soc_work;
+	struct delayed_work ramp_work;
 	struct workqueue_struct *qos_update_wq;
 	struct thermal_zone_device *soc_tz;
 	struct thermal_zone_device_ops soc_tz_ops;
 	bool throttle;
+	int ramp_lvl;
+	bool dvfs_ramp_enable;
 
 	int trip_high_temp;
 	int trip_low_temp;
 	int trip_val;
 	struct mutex sysreg_lock;
 
+	struct i2c_client *main_i2c;
 	struct i2c_client *main_pmic_i2c;
+	struct i2c_client *main_rtc_i2c;
+	struct i2c_client *sub_i2c;
 	struct i2c_client *sub_pmic_i2c;
 	struct i2c_client *main_meter_i2c;
 	struct i2c_client *sub_meter_i2c;
 	struct device *intf_pmic_dev;
 	struct device *irq_pmic_dev;
 	struct device *fg_pmic_dev;
-#if IS_ENABLED(CONFIG_SOC_ZUMAPRO)
 	struct device *vimon_dev;
-#endif
 	struct mutex qos_update_lock;
 	struct mutex cpu_ratio_lock;
 	struct bcl_core_conf core_conf[SUBSYSTEM_SOURCE_MAX];
 	struct bcl_cpu_buff_conf cpu_buff_conf[CPU_CLUSTER_MAX];
 	struct notifier_block cpu_nb;
+	struct delayed_work rd_last_curr_work;
 
 	bool batt_psy_initialized;
-	bool enabled;
+	bool initialized;
+	bool sw_mitigation_enabled;
+	bool hw_mitigation_enabled;
 
 	unsigned int main_offsrc1;
 	unsigned int main_offsrc2;
@@ -374,12 +423,15 @@ struct bcl_device {
 	unsigned int pwronsrc;
 	unsigned int irq_delay;
 	unsigned int last_current;
+	unsigned int last_curr_rd_retry_cnt;
 
-	struct gpio_desc *vdroop1_pin;
-	struct gpio_desc *vdroop2_pin;
-	struct gpio_desc *modem_gpio1_pin;
-	struct gpio_desc *modem_gpio2_pin;
+	unsigned int vdroop1_pin;
+	unsigned int vdroop2_pin;
+	unsigned int modem_gpio1_pin;
+	unsigned int modem_gpio2_pin;
 	unsigned int rffe_channel;
+
+	unsigned int dvfs_rel;
 
 	/* debug */
 	struct dentry *debug_entry;
@@ -429,21 +481,25 @@ struct bcl_device {
 	unsigned int triggered_idx;
 	ssize_t br_stats_size;
 	struct brownout_stats *br_stats;
+	struct max_odpm_stats *max_odpm_stats;
 	/* module id */
 	struct bcl_mitigation_conf main_mitigation_conf[METER_CHANNEL_MAX];
 	struct bcl_mitigation_conf sub_mitigation_conf[METER_CHANNEL_MAX];
 	u32 *non_monitored_module_ids;
 	u32 non_monitored_mitigation_module_ids;
 	atomic_t mitigation_module_ids;
-#if IS_ENABLED(CONFIG_SOC_ZUMAPRO)
+#if IS_ENABLED(CONFIG_REGULATOR_S2MPG14) || IS_ENABLED(CONFIG_REGULATOR_S2MPG12)
 	struct gvotable_election *toggle_wlc;
 	struct gvotable_election *toggle_usb;
 	struct gvotable_election *toggle_otg;
+#endif
+
+#if IS_ENABLED(CONFIG_SOC_ZUMAPRO)
 	struct bcl_evt_count evt_cnt;
 	struct bcl_evt_count evt_cnt_latest;
+#endif
 
 	struct bcl_vimon_intf vimon_intf;
-#endif
 	bool config_modem;
 	bool rffe_mitigation_enable;
 
@@ -460,9 +516,19 @@ struct bcl_device {
 	bool oilo1_vdrp2_en;
 	bool oilo2_vdrp1_en;
 	bool oilo2_vdrp2_en;
+	bool vimon_pwr_loop_en;
+	bool vimon_pwr_loop_cnt;
+	int vimon_pwr_loop_thresh;
+
 	struct delayed_work qos_work;
 
 	bool usb_otg_conf;
+
+	bool is_bat_ktimer_supported;
+	bool bat_ktimer_en;
+	unsigned int bat_ktimer;
+
+	struct wakeup_source *ws;
 };
 
 extern void google_bcl_irq_update_lvl(struct bcl_device *bcl_dev, int index, unsigned int lvl);
@@ -485,11 +551,12 @@ int pmic_read(int pmic, struct bcl_device *bcl_dev, u8 reg, u8 *value);
 int meter_write(int pmic, struct bcl_device *bcl_dev, u8 reg, u8 value);
 int meter_read(int pmic, struct bcl_device *bcl_dev, u8 reg, u8 *value);
 u64 settings_to_current(struct bcl_device *bcl_dev, int pmic, int idx, u32 setting);
-void google_bcl_qos_update(struct bcl_zone *zone, bool throttle);
+void google_bcl_qos_update(struct bcl_zone *triggered_zone, bool throttle);
 int google_bcl_setup_qos(struct bcl_device *bcl_dev);
 void google_bcl_remove_qos(struct bcl_device *bcl_dev);
 void google_init_debugfs(struct bcl_device *bcl_dev);
-int uvlo_reg_read(struct device *dev, enum IFPMIC ifpmic, int triggered, unsigned int *val);
+int uvlo_reg_read(struct device *dev, enum IFPMIC ifpmic, int triggered, unsigned int *val,
+					enum PMIC_SIG_PARAM pmic_sig_param);
 int batoilo_reg_read(struct device *dev, enum IFPMIC ifpmic, int oilo, unsigned int *val);
 int max77759_get_irq(struct bcl_device *bcl_dev, u8 *irq_val);
 int max77759_clr_irq(struct bcl_device *bcl_dev, int idx);
@@ -500,14 +567,28 @@ int google_bcl_init_data_logging(struct bcl_device *bcl_dev);
 void google_bcl_start_data_logging(struct bcl_device *bcl_dev, int idx);
 void google_bcl_remove_data_logging(struct bcl_device *bcl_dev);
 void google_bcl_upstream_state(struct bcl_zone *zone, enum MITIGATION_MODE state);
+int google_pwr_loop_trigger_mitigation(struct bcl_device *bcl_dev);
 int max77759_vimon_read(struct bcl_device *bcl_dev);
 int max77779_vimon_read(struct bcl_device *bcl_dev);
+int max77759_req_vimon_conv(struct bcl_device *bcl_dev, int idx);
+int max77779_vimon_register_callback(struct bcl_device *bcl_dev);
+
 #if IS_ENABLED(CONFIG_SOC_ZUMAPRO)
 int max77779_adjust_bat_open_to(struct bcl_device *bcl_dev, bool enable);
 int max77779_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 set_batoilo1_lvl,
                                 u8 set_batoilo2_lvl);
+#else
+int max77759_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 set_batoilo1_lvl);
+#endif
+
+#if IS_ENABLED(CONFIG_REGULATOR_S2MPG14) || IS_ENABLED(CONFIG_REGULATOR_S2MPG12)
 int google_bcl_setup_votable(struct bcl_device *bcl_dev);
 void google_bcl_remove_votable(struct bcl_device *bcl_dev);
 #endif
+
+void google_bcl_enable_timer(struct bcl_device *bcl_dev);
+void google_bcl_start_timer(struct bcl_device *bcl_dev);
+void google_bcl_cancel_timer(struct bcl_device *bcl_dev);
+void google_bcl_disable_timer(struct bcl_device *bcl_dev);
 
 #endif /* __BCL_H */
