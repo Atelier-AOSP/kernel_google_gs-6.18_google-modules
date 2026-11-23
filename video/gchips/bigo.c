@@ -210,7 +210,8 @@ static void bigo_close(struct kref *ref)
 	struct bigo_inst *inst = container_of(ref, struct bigo_inst, refcount);
 
 	if (inst && inst->core) {
-		clear_job_from_prioq(inst->core, inst);
+		if (clear_job_from_prioq(inst->core, inst))
+			kref_put(&inst->refcount, bigo_close);
 		bigo_unmap_all(inst);
 		bigo_mark_qos_dirty(inst->core);
 		bigo_update_qos(inst->core);
@@ -435,8 +436,10 @@ static long bigo_unlocked_ioctl(struct file *file, unsigned int cmd,
 #else
 		inst->is_decoder_usage = true;
 #endif
+		kref_get(&inst->refcount);
 		if(enqueue_prioq(core, inst)) {
 			pr_err("Failed enqueue frame\n");
+			kref_put(&inst->refcount, bigo_close);
 			rc = -EFAULT;
 			break;
 		}
@@ -446,7 +449,8 @@ static long bigo_unlocked_ioctl(struct file *file, unsigned int cmd,
 			msecs_to_jiffies(JOB_COMPLETE_TIMEOUT_MS * 16));
 		if (!ret) {
 			pr_err("timed out waiting for HW: %d\n", rc);
-			clear_job_from_prioq(core, inst);
+			if (clear_job_from_prioq(core, inst))
+				kref_put(&inst->refcount, bigo_close);
 			rc = -ETIMEDOUT;
 		} else {
 			rc = (ret > 0) ? 0 : ret;
@@ -711,6 +715,7 @@ static int bigo_worker_thread(void *data)
 			continue;
 
 		inst = container_of(job, struct bigo_inst, job);
+		bool is_secure = READ_ONCE(inst->is_secure);
 
 		if (inst->idle) {
 			inst->idle = false;
@@ -718,7 +723,7 @@ static int bigo_worker_thread(void *data)
 		}
 
 		bigo_update_qos(core);
-		if (inst->is_secure) {
+		if (is_secure) {
 			rc = exynos_smc(SMC_PROTECTION_SET, 0, BIGO_SMC_ID,
 					SMC_PROTECTION_ENABLE);
 			if (rc) {
@@ -729,7 +734,7 @@ static int bigo_worker_thread(void *data)
 
 		rc = bigo_run_job(core, job);
 
-		if (inst->is_secure) {
+		if (is_secure) {
 			if (exynos_smc(SMC_PROTECTION_SET, 0, BIGO_SMC_ID,
 					SMC_PROTECTION_DISABLE))
 				pr_err("failed to disable SMC_PROTECTION_SET: %d\n", rc);
@@ -738,6 +743,7 @@ static int bigo_worker_thread(void *data)
 	done:
 		job->status = rc;
 		complete(&inst->job_comp);
+		kref_put(&inst->refcount, bigo_close);
 	}
 	return 0;
 }
@@ -787,7 +793,7 @@ static int bigo_probe(struct platform_device *pdev)
 	}
 
 	mutex_init(&core->lock);
-	mutex_init(&core->prioq.lock);
+	spin_lock_init(&core->prioq.lock);
 	INIT_LIST_HEAD(&core->instances);
 	INIT_LIST_HEAD(&core->pm.opps);
 	INIT_LIST_HEAD(&core->pm.bw);
@@ -878,6 +884,7 @@ static const struct of_device_id bigo_dt_match[] = {
 	{ .compatible = "google,bigocean"},
 	{}
 };
+MODULE_DEVICE_TABLE(of, bigo_dt_match);
 
 static struct platform_driver bigo_driver = {
 	.probe = bigo_probe,

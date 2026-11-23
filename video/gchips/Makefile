@@ -8,11 +8,12 @@ M ?= $(shell pwd)
 
 EXTRA_CFLAGS	+= -DDYNAMIC_DEBUG_MODULE
 
-include $(KERNEL_SRC)/../private/google-modules/soc/gs/Makefile.include
+include $(ROOT_DIR)/private/google-modules/soc/gs/Makefile.include
 
-EXTRA_CFLAGS += -I$(KERNEL_SRC)/../private/google-modules/video/gchips/include
+EXTRA_CFLAGS += -I$(ROOT_DIR)/private/google-modules/video/gchips/include
+EXTRA_CFLAGS += -DENABLE_SLC=1
 
-modules modules_install headers_install clean:
+modules modules_install headers_install clean compile_commands.json:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M) \
 	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" $(@)
 
