@@ -16,7 +16,6 @@
 
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
-#include <linux/uio.h>
 
 static bool is_aaudio_mmaped_service(const char *name)
 {
@@ -106,13 +105,18 @@ void aoc_timer_start(struct aoc_alsa_stream *alsa_stream)
 		hrtimer_start(&(alsa_stream->hr_timer), interval, HRTIMER_MODE_REL);
 }
 
-void aoc_timer_restart(struct aoc_alsa_stream *alsa_stream)
+void aoc_timer_restart_interval(struct aoc_alsa_stream *alsa_stream, unsigned long interval_ns)
 {
 	ktime_t currtime;
-	ktime_t interval = ktime_set(0, alsa_stream->timer_interval_ns);
+	ktime_t interval = ktime_set(0, interval_ns);
 	currtime = ktime_get();
 	if (alsa_stream->isr_type == TIMER)
 		hrtimer_forward(&(alsa_stream->hr_timer), currtime, interval);
+}
+
+void aoc_timer_restart(struct aoc_alsa_stream *alsa_stream)
+{
+	aoc_timer_restart_interval(alsa_stream, alsa_stream->timer_interval_ns);
 }
 
 void aoc_timer_stop(struct aoc_alsa_stream *alsa_stream)
@@ -138,6 +142,7 @@ void aoc_timer_stop_sync(struct aoc_alsa_stream *alsa_stream)
 bool aoc_pcm_update_pos(struct aoc_alsa_stream *alsa_stream, unsigned long consumed)
 {
 	unsigned long buffer_cnt;
+	unsigned int adjust_pos = 0;
 
 	/* Update the pcm pointer  */
 	if (unlikely(alsa_stream->n_overflow)) {
@@ -165,7 +170,16 @@ bool aoc_pcm_update_pos(struct aoc_alsa_stream *alsa_stream, unsigned long consu
 		alsa_stream->prev_buffer_cnt = buffer_cnt;
 	}
 
-	return (alsa_stream->pos_delta >= alsa_stream->period_size) ? true : false;
+	/* Update the pos to a multiple of the period size */
+	if (alsa_stream->pos_delta > alsa_stream->period_size) {
+		adjust_pos = alsa_stream->pos_delta % alsa_stream->period_size;
+		if (adjust_pos) {
+			alsa_stream->pos -= adjust_pos;
+			alsa_stream->prev_consumed -= adjust_pos;
+		}
+	}
+
+	return alsa_stream->pos_delta >= alsa_stream->period_size;
 }
 
 /* Hardware definition
@@ -190,23 +204,29 @@ static struct snd_pcm_hardware snd_aoc_playback_hw = {
 	.periods_max = 1024 * 6,
 };
 
-static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_stream)
+static enum aoc_pcm_process_status aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_stream)
 {
 	struct aoc_service_dev *dev;
+	struct snd_pcm_runtime *runtime;
 	unsigned long consumed;
 	unsigned long avail;
 
-	/* The number of bytes read/writtien should be the bytes in the buffer
+	if (!alsa_stream || !alsa_stream->substream || !alsa_stream->substream->runtime ||
+	    !alsa_stream->dev)
+		return AOC_PCM_FATAL_ERROR;
+
+	dev = alsa_stream->dev;
+	runtime = alsa_stream->substream->runtime;
+
+	if (runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+		return AOC_PCM_FATAL_ERROR;
+
+	/* The number of bytes read/written should be the bytes in the buffer
 	 * already played out in the case of playback. But this may not be true
 	 * in the AoC ring buffer implementation, since the reader pointer in
 	 * the playback case represents what has been read from the buffer,
 	 * not what already played out .
 	*/
-	if (alsa_stream->dev == NULL ||
-		 alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
-		return HRTIMER_RESTART;
-
-	dev = alsa_stream->dev;
 	consumed = ((alsa_stream->substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ?
 				  aoc_ring_bytes_read(dev->service, AOC_DOWN) :
 				  aoc_ring_bytes_written(dev->service, AOC_UP));
@@ -224,7 +244,7 @@ static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_str
 
 	/* TODO: To do more on no pointer update? */
 	if (consumed == alsa_stream->prev_consumed)
-		return HRTIMER_RESTART;
+		return AOC_PCM_NO_NEW_DATA;
 
 	/* To deal with overlfow in Tx or Rx in int32_t */
 	if (consumed < alsa_stream->prev_consumed) {
@@ -235,13 +255,13 @@ static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_str
 	alsa_stream->prev_consumed = consumed;
 
 	if (!aoc_pcm_update_pos(alsa_stream, consumed))
-		return HRTIMER_RESTART;
+		return AOC_PCM_PERIOD_NOT_ELAPSED;
 
 	alsa_stream->prev_pos = alsa_stream->pos;
 
 	/* Do not queue a work if the cancel_work is active */
 	if (atomic_read(&alsa_stream->cancel_work_active) > 0 || alsa_stream->pcm_period_wq == NULL)
-		return HRTIMER_RESTART;
+		return AOC_PCM_NO_NEW_DATA;
 
 	if (!queue_work(alsa_stream->pcm_period_wq, &alsa_stream->pcm_period_work)) {
 		wake_up(&alsa_stream->substream->runtime->sleep);
@@ -253,29 +273,65 @@ static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_str
 	} else
 		alsa_stream->wq_busy_count = 0;
 
-	return HRTIMER_RESTART;
+	return AOC_PCM_PERIOD_ELAPSED;
 }
 
 static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
 {
 	struct aoc_alsa_stream *alsa_stream;
+	struct snd_pcm_runtime *runtime;
+	enum aoc_pcm_process_status status;
 
 	WARN_ON(!timer);
 	alsa_stream = container_of(timer, struct aoc_alsa_stream, hr_timer);
 
 	WARN_ON(!alsa_stream || !alsa_stream->substream);
 
-	if(alsa_stream->substream->runtime->status->state == SNDRV_PCM_STATE_PREPARED) {
-		aoc_timer_restart(alsa_stream);
-		return HRTIMER_RESTART;
-	} else if(alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+	runtime = alsa_stream->substream->runtime;
+	if (!runtime)
 		return HRTIMER_NORESTART;
 
-	/* Start the timer immediately for next period */
-	/* aoc_timer_start(alsa_stream); */
-	aoc_timer_restart(alsa_stream);
+	if (runtime->status->state == SNDRV_PCM_STATE_PREPARED) {
+		aoc_timer_restart(alsa_stream);
+		return HRTIMER_RESTART;
+	} else if (runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+		return HRTIMER_NORESTART;
 
-	return aoc_pcm_irq_process(alsa_stream);
+	status = aoc_pcm_irq_process(alsa_stream);
+
+	if (status == AOC_PCM_FATAL_ERROR) {
+		return HRTIMER_NORESTART;
+	} else if (status == AOC_PCM_PERIOD_NOT_ELAPSED) {
+		/* Default to 1ms polling if runtime->rate is 0 or if the period_size check
+		 * fails. Although runtime->rate should be valid at this point, this provides
+		 * a safe fallback.
+		 */
+		unsigned long interval_ns = PCM_POLL_INTERVAL_NANOSECS;
+		if (runtime->rate && alsa_stream->period_size > alsa_stream->pos_delta) {
+			/* Calculate the remaining time until the current period is completed */
+			unsigned int remaining_bytes = alsa_stream->period_size - alsa_stream->pos_delta;
+			snd_pcm_uframes_t remaining_frames = bytes_to_frames(runtime, remaining_bytes);
+			/* Use div_u64 to avoid linker errors on 32-bit platforms when dividing a
+			 * 64-bit value, ensuring precise nanosecond calculations.
+			 */
+			u64 remaining_ns = div_u64((u64)remaining_frames * NSEC_PER_SEC, runtime->rate);
+			/* If remaining time > 1ms, schedule timer for remaining time,
+			 * else poll at 1ms.
+			 */
+			if (remaining_ns > PCM_POLL_THRESHOLD_NANOSECS) {
+				/* Cap the interval at the stream's default timer interval
+				 * to avoid scheduling too far in the future.
+				 */
+				interval_ns = min((unsigned long)remaining_ns, alsa_stream->timer_interval_ns);
+			}
+		}
+		aoc_timer_restart_interval(alsa_stream, interval_ns);
+	} else {
+		/* For AOC_PCM_PERIOD_ELAPSED or AOC_PCM_NO_NEW_DATA, use normal interval */
+		aoc_timer_restart_interval(alsa_stream, alsa_stream->timer_interval_ns);
+	}
+
+	return HRTIMER_RESTART;
 }
 
 void aoc_pcm_isr(struct aoc_service_dev *dev)
@@ -395,8 +451,8 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 		alsa_stream->isr_type = INTR;
 	} else {
 		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
-		hrtimer_setup(&alsa_stream->hr_timer, aoc_pcm_hrtimer_irq_handler,
-			      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
 		alsa_stream->isr_type = TIMER;
 	}
 
@@ -672,9 +728,8 @@ static int snd_aoc_pcm_trigger(struct snd_soc_component *component,
 }
 
 /* Copy data from user space to hardware buffer  */
-static int snd_aoc_pcm_playback_copy(struct snd_pcm_substream *substream, int channel,
-				     unsigned long pos, struct iov_iter *buf,
-				     unsigned long count)
+static int snd_aoc_pcm_playback_copy_user(struct snd_pcm_substream *substream, int channel,
+					  unsigned long pos, void __user *buf, unsigned long count)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
@@ -688,9 +743,8 @@ static int snd_aoc_pcm_playback_copy(struct snd_pcm_substream *substream, int ch
 }
 
 /* Copy data from hardware buffer to user space */
-static int snd_aoc_pcm_capture_copy(struct snd_pcm_substream *substream, int channel,
-				    unsigned long pos, struct iov_iter *buf,
-				    unsigned long count)
+static int snd_aoc_pcm_capture_copy_user(struct snd_pcm_substream *substream, int channel,
+					 unsigned long pos, void __user *buf, unsigned long count)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
@@ -704,15 +758,15 @@ static int snd_aoc_pcm_capture_copy(struct snd_pcm_substream *substream, int cha
 }
 
 /* Copy data between hardware buffer and user space */
-static int snd_aoc_pcm_copy(struct snd_soc_component *component,
-			    struct snd_pcm_substream *substream, int channel,
-			    unsigned long pos, struct iov_iter *buf,
-			    unsigned long count)
+static int snd_aoc_pcm_copy_user(struct snd_soc_component *component,
+				 struct snd_pcm_substream *substream, int channel,
+				 unsigned long pos, void __user *buf, unsigned long count)
 {
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		return snd_aoc_pcm_playback_copy(substream, channel, pos, buf, count);
-	/* Capture */
-	return snd_aoc_pcm_capture_copy(substream, channel, pos, buf, count);
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		return snd_aoc_pcm_playback_copy_user(substream, channel, pos, buf, count);
+	} else { /* Capture */
+		return snd_aoc_pcm_capture_copy_user(substream, channel, pos, buf, count);
+	}
 }
 
 /* Pointer callback */
@@ -784,7 +838,7 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
 	dma_set_mask_and_coherent(component->dev, DMA_BIT_MASK(64));
 
 	/* Allocate DMA memory */
-	if (rtd->dai_link->playback_only) {
+	if (rtd->dai_link->dpcm_playback) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
 					      component->dev,
@@ -792,7 +846,7 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
 					      snd_aoc_playback_hw.buffer_bytes_max);
 	}
 
-	if (rtd->dai_link->capture_only) {
+	if (rtd->dai_link->dpcm_capture) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
 					      component->dev,
@@ -813,7 +867,7 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
 	.ioctl = snd_aoc_pcm_lib_ioctl,
 	.hw_params = snd_aoc_pcm_hw_params,
 	.hw_free = snd_aoc_pcm_hw_free,
-	.copy = snd_aoc_pcm_copy,
+	.copy_user = snd_aoc_pcm_copy_user,
 	.prepare = snd_aoc_pcm_prepare,
 	.trigger = snd_aoc_pcm_trigger,
 	.pointer = snd_aoc_pcm_pointer,

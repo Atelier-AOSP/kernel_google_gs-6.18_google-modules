@@ -34,6 +34,7 @@
 #include "../aoc-interface.h"
 #include "google-aoc-enum.h"
 #include "usbaudio.h"
+#include "audiometrics.h"
 
 #define AOC_SND_CARD "aoc-snd-card"
 #define ALSA_AOC_CMD "alsa-aoc"
@@ -46,6 +47,7 @@
 #define AOC_MMAP_CAPTURE_SERVICE "audio_capture1"
 #define AOC_COMPR_OFFLOAD_SERVICE "audio_playback6"
 #define AOC_COMPR_OFFLOAD_EOF_SERVICE "decoder_eof"
+#define AOC_DISPLAYPORT_SERVICE "audio_displayport"
 
 enum uc_device_id {
 	UC_AUDIO_RECORD = 8,
@@ -63,8 +65,11 @@ enum uc_device_id {
 
 #define AOC_CMD_DEBUG_ENABLE
 #define WAITING_TIME_MS 500
+#define DSP_MOD_WAITING_TIME_MS 700
 
-#define PCM_TIMER_INTERVAL_NANOSECS 10e6
+#define PCM_TIMER_INTERVAL_NANOSECS 10000000UL /* 10ms */
+#define PCM_POLL_INTERVAL_NANOSECS 1000000UL /* 1ms */
+#define PCM_POLL_THRESHOLD_NANOSECS 1000000UL /* 1ms threshold */
 #define COMPR_OFFLOAD_TIMER_INTERVAL_NANOSECS 5000e6
 #define AOC_COMPR_HRTIMER_IRQ_HANDLER_BYPASS
 #define DEFAULT_PCM_WAIT_TIME_IN_MSECS 10000
@@ -242,6 +247,12 @@ enum { CHRE_GAIN_PATH_PDM = 0, CHRE_GAIN_PATH_AEC, CHRE_GAIN_PATH_TOT };
 
 enum { AOC_CHIRP_INTERVAL = 0, AOC_CHIRP_ENABLE, AOC_CHIRP_MODE, AOC_CHIRP_GAIN };
 
+enum PCM_OPTION_INDEX {
+	PCM_OPTION_INDEX_BIT_DEPTH,   /* Sample bit depth of the stream */
+	PCM_OPTION_INDEX_FORMAT,      /* Sample format of the stream */
+	PCM_OPTION_INDEX_BITFIELD_1,  /* Custom bit fields */
+};
+
 struct aoc_chip {
 	struct snd_card *card;
 	struct snd_soc_jack jack; /* TODO: temporary use, need refactor  */
@@ -295,6 +306,7 @@ struct aoc_chip {
 	int sidetone_enable;
 	int mic_loopback_enabled;
 	int gapless_offload_enable;
+	int mmap_offload_enable;
 	int chirp_enable;
 	int chirp_interval;
 	int chirp_mode;
@@ -323,6 +335,7 @@ struct aoc_chip {
 
 	bool hotword_supported;
 	bool chre_supported;
+	bool skip_mmap_offload;
 
 	struct AUDIO_OUTPUT_BT_A2DP_ENC_CFG a2dp_encoder_cfg;
 	struct CMD_AUDIO_OUTPUT_USB_CONFIG usb_sink_cfg;
@@ -330,6 +343,9 @@ struct aoc_chip {
 	struct CMD_AUDIO_OUTPUT_GET_SIDETONE sidetone_cfg;
 
 	struct gpio_desc *hac_amp_en_gpio;
+#if !(IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201))
+	struct CMD_AUDIO_OUTPUT_DECODER_CFG_SPEED decoder_cfg_speed;
+#endif
 };
 
 struct aoc_alsa_stream {
@@ -344,6 +360,7 @@ struct aoc_alsa_stream {
 	uint32_t compr_padding;
 	uint32_t compr_delay;
 	uint64_t compr_pcm_io_sample_base;
+	uint64_t compr_pcm_decoder_base;
 	int offload_temp_data_buf_size;
 	struct timer_list timer; /* For advancing the hw ptr */
 	struct hrtimer hr_timer; /* For advancing the hw ptr */
@@ -385,9 +402,17 @@ struct aoc_alsa_stream {
 	struct work_struct pcm_period_work;
 };
 
+enum aoc_pcm_process_status {
+	AOC_PCM_FATAL_ERROR = -1,
+	AOC_PCM_NO_NEW_DATA = 0,
+	AOC_PCM_PERIOD_NOT_ELAPSED,
+	AOC_PCM_PERIOD_ELAPSED,
+};
+
 bool aoc_support_interrupt_idx(int idx);
 void aoc_timer_start(struct aoc_alsa_stream *alsa_stream);
 void aoc_timer_restart(struct aoc_alsa_stream *alsa_stream);
+void aoc_timer_restart_interval(struct aoc_alsa_stream *alsa_stream, unsigned long interval_ns);
 void aoc_timer_stop(struct aoc_alsa_stream *alsa_stream);
 void aoc_timer_stop_sync(struct aoc_alsa_stream *alsa_stream);
 void aoc_pcm_period_work_handler(struct work_struct *work);
@@ -511,18 +536,22 @@ int aoc_set_usb_feedback_endpoint(struct aoc_chip *chip, struct usb_device *udev
 		    struct usb_host_endpoint *ep);
 int aoc_set_usb_offload_state(struct aoc_chip *chip, bool offload_enable);
 
-#if !IS_ENABLED(CONFIG_AOC_USB)
-static inline int aoc_set_usb_mem_config(struct aoc_chip *achip) { return 0; }
-#endif
+int aoc_set_usb_mem_config(struct aoc_chip *achip);
 
 int aoc_multichannel_processor_switch_set(struct aoc_chip *achip, int value);
 
-int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, struct iov_iter *buf,
+int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
 		    uint32_t count);
-int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, struct iov_iter *buf,
+int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, void *dest,
 		   uint32_t count);
 int aoc_audio_volume_set(struct aoc_chip *chip, uint32_t volume,
 			 int src, int dst);
+int aoc_displayport_read(struct aoc_chip *chip, void *dest,
+			 size_t buf_size);
+int aoc_displayport_flush(struct aoc_chip *chip);
+int aoc_displayport_service_alloc(struct aoc_chip *chip);
+int aoc_displayport_service_free(struct aoc_chip *chip);
+
 int aoc_audio_set_chirp_parameter(struct aoc_chip *chip, int key, int value);
 
 int aoc_audio_set_two_one(struct aoc_chip *chip, int enable);
@@ -548,6 +577,7 @@ int aoc_compr_offload_send_metadata(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_offload_partial_drain(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_offload_close(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_offload_get_io_samples(struct aoc_alsa_stream *alsa_stream, uint64_t *sample);
+int aoc_compr_offload_get_decoder_frames(struct aoc_alsa_stream *alsa_stream, uint64_t *frames);
 int aoc_compr_offload_flush_buffer(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_pause(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_resume(struct aoc_alsa_stream *alsa_stream);
@@ -555,6 +585,12 @@ int aoc_compr_offload_linear_gain_get(struct aoc_chip *chip, long *val);
 int aoc_compr_offload_linear_gain_set(struct aoc_chip *chip, long *val);
 int aoc_compr_offload_reset_io_sample_base(struct aoc_alsa_stream *alsa_stream);
 int aoc_compr_get_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position);
+int aoc_compr_get_decoder_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position);
+int aoc_compr_offload_reset_decorder_base(struct aoc_alsa_stream *alsa_stream);
+#if !(IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201))
+int aoc_compr_offload_playback_rate_get(struct aoc_chip *chip, long *val);
+int aoc_compr_offload_playback_rate_set(struct aoc_chip *chip, long *val);
+#endif
 
 int aoc_mic_loopback(struct aoc_chip *chip, int enable);
 
@@ -572,7 +608,10 @@ int aoc_incall_init(void);
 void aoc_incall_exit(void);
 int aoc_voip_init(void);
 void aoc_voip_exit(void);
+int aoc_usb_init(void);
 void aoc_usb_exit(void);
+int aoc_dp_init(void);
+void aoc_dp_exit(void);
 int aoc_audio_mic_mask_set(struct aoc_chip *chip, bool is_voice);
 
 int aoc_audio_us_record(struct aoc_chip *chip, bool enable);

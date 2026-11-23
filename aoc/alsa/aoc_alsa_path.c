@@ -38,7 +38,7 @@ struct be_path_cache port_array[PORT_MAX] = {
 static const struct snd_soc_dai_ops be_dai_ops;
 static struct mutex path_mutex;
 
-static int aoc_compress_new(struct snd_soc_pcm_runtime *rtd);
+static int aoc_compress_new(struct snd_soc_pcm_runtime *rtd, int num);
 
 static const uint32_t rx_ep_list[] = {
 	IDX_EP2_RX,           /* low-latency-playback */
@@ -70,10 +70,6 @@ static const uint32_t tx_ep_list[] = {
 	IDX_EP5_TX,     /* reserved */
 	IDX_EP6_TX,     /* reserved */
 	IDX_EP7_TX,     /* reserved */
-};
-
-static const struct snd_soc_dai_ops aoc_dai_ops = {
-	.compress_new = aoc_compress_new,
 };
 
 static struct snd_soc_dai_driver aoc_dai_drv[] = {
@@ -186,7 +182,7 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
 			.channels_min = 1,
 			.channels_max = 2,
 		},
-		.ops = &aoc_dai_ops,
+		.compress_new = aoc_compress_new,
 		.name = "EP7 PB",
 		.id = IDX_EP7_RX,
 	},
@@ -914,9 +910,9 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
 
 };
 
-static int aoc_compress_new(struct snd_soc_pcm_runtime *rtd)
+static int aoc_compress_new(struct snd_soc_pcm_runtime *rtd, int num)
 {
-	int ret = snd_soc_new_compress(rtd);
+	int ret = snd_soc_new_compress(rtd, num);
 	if (ret >= 0) {
 		rtd->pcm->nonatomic = true;
 	}
@@ -1872,6 +1868,30 @@ const struct snd_kcontrol_new ep6_tx_ctrl[] = {
 	SOC_SINGLE_EXT("INCALL_TX", SND_SOC_NOPM, INCALL_TX, 1, 0, ep6_tx_get, ep6_tx_put),
 };
 
+static int hifi_tx_put(struct snd_kcontrol *kcontrol,
+		      struct snd_ctl_elem_value *ucontrol)
+{
+	struct soc_mixer_control *mc =
+		(struct soc_mixer_control *)kcontrol->private_value;
+	u32 hw_idx = mc->shift;
+
+	return aoc_path_put(IDX_HIFI_TX, hw_idx, kcontrol, ucontrol);
+}
+
+static int hifi_tx_get(struct snd_kcontrol *kcontrol,
+		      struct snd_ctl_elem_value *ucontrol)
+{
+	struct soc_mixer_control *mc =
+		(struct soc_mixer_control *)kcontrol->private_value;
+	u32 hw_idx = mc->shift;
+
+	return aoc_path_get(IDX_HIFI_TX, hw_idx, kcontrol, ucontrol);
+}
+
+const struct snd_kcontrol_new hifi_tx_ctrl[] = {
+	SOC_SINGLE_EXT("USB_TX", SND_SOC_NOPM, USB_TX, 1, 0, hifi_tx_get, hifi_tx_put),
+};
+
 static int voip_tx_put(struct snd_kcontrol *kcontrol,
 		      struct snd_ctl_elem_value *ucontrol)
 {
@@ -1967,6 +1987,7 @@ const struct snd_soc_dapm_widget aoc_widget[] = {
 	SND_SOC_DAPM_AIF_OUT("EP5_TX", "EP5 Capture", 0, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_AIF_OUT("EP6_TX", "EP6 Capture", 0, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_AIF_OUT("VOIP_TX", "audio_voip_tx", 0, SND_SOC_NOPM, 0, 0),
+	SND_SOC_DAPM_AIF_OUT("HIFI_TX", "audio_hifiin", 0, SND_SOC_NOPM, 0, 0),
 
 	/* NoHost FE */
 	/* RX */
@@ -2056,6 +2077,9 @@ const struct snd_soc_dapm_widget aoc_widget[] = {
 
 	SND_SOC_DAPM_MIXER("EP6 TX Mixer", SND_SOC_NOPM, 0, 0, ep6_tx_ctrl,
 			   ARRAY_SIZE(ep6_tx_ctrl)),
+
+	SND_SOC_DAPM_MIXER("HIFI TX Mixer", SND_SOC_NOPM, 0, 0,
+		hifi_tx_ctrl, ARRAY_SIZE(hifi_tx_ctrl)),
 
 	/* NoHost TX path */
 	SND_SOC_DAPM_MIXER("VOIP TX Mixer", SND_SOC_NOPM, 0, 0,
@@ -2266,6 +2290,9 @@ static const struct snd_soc_dapm_route aoc_routes[] = {
 	{ "EP6 TX Mixer", "BT_TX", "BT_TX" },
 	{ "EP6 TX Mixer", "USB_TX", "USB_TX" },
 	{ "EP6 TX Mixer", "INCALL_TX", "INCALL_TX" },
+
+	{ "HIFI_TX", NULL, "HIFI TX Mixer" },
+	{ "HIFI TX Mixer", "USB_TX", "USB_TX" },
 
 	{ "VOIP_TX", NULL, "VOIP TX Mixer" },
 	{ "VOIP TX Mixer", "I2S_0_TX", "I2S_0_TX" },

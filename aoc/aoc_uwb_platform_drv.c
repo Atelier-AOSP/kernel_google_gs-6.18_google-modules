@@ -38,7 +38,7 @@ err_exit:
 	return ret;
 }
 
-static int value_set(struct gpio_chip *gc, unsigned offset, int value)
+static void value_set(struct gpio_chip *gc, unsigned offset, int value)
 {
 	struct CMD_UWB_SET_RESET_GPIO cmd = { 0 };
 	int ret;
@@ -46,7 +46,7 @@ static int value_set(struct gpio_chip *gc, unsigned offset, int value)
 	dev_dbg(gc->parent, "value=%d\n", value);
 	if (offset) {
 		dev_err(gc->parent, "wrong offset\n");
-		return -EINVAL;
+		return;
 	}
 
 	AocCmdHdrSet(&cmd.parent, CMD_UWB_SET_RESET_GPIO_ID, sizeof(cmd));
@@ -54,8 +54,6 @@ static int value_set(struct gpio_chip *gc, unsigned offset, int value)
 	ret = aoc_uwb_service_send(&cmd, sizeof(cmd));
 	if (ret < 0)
 		dev_err(gc->parent, "error sending pin set to aoc ret=%d\n", ret);
-
-	return ret;
 }
 
 static int aoc_uwb_reset_set_direction(struct gpio_chip *gc, bool output)
@@ -107,7 +105,7 @@ static int uwb_pdrv_pin_init(struct platform_device *pdev)
 
 	chip.label = node->name;
 	chip.parent = dev;
-	chip.fwnode = of_node_to_fwnode(node);
+	chip.of_node = node;
 	chip.ngpio = ngpio;
 	return devm_gpiochip_add_data(dev, &chip, NULL);
 }
@@ -120,12 +118,18 @@ static int aoc_uwb_pdrv_probe(struct platform_device *pdev)
 	return uwb_pdrv_pin_init(pdev);
 }
 
+static int aoc_uwb_pdrv_remove(struct platform_device *pdev)
+{
+	return 0;
+}
+
 static const struct of_device_id aoc_match[] = {
 	{
 		.compatible = "google,aoc_uwb_rst",
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, aoc_match);
 
 static struct platform_driver aoc_uwb_pdrv = {
 	.driver = {
@@ -134,6 +138,7 @@ static struct platform_driver aoc_uwb_pdrv = {
 		.of_match_table = of_match_ptr(aoc_match)
 	},
 	.probe = aoc_uwb_pdrv_probe,
+	.remove = aoc_uwb_pdrv_remove,
 };
 
 module_platform_driver(aoc_uwb_pdrv);

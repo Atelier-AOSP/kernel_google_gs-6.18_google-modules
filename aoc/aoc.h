@@ -9,9 +9,6 @@
  * published by the Free Software Foundation.
  */
 
-#ifndef AOC_H
-#define AOC_H
-
 #include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -45,6 +42,10 @@
 #define SENSOR_DIRECT_HEAP_SIZE SZ_4M
 #define PLAYBACK_HEAP_SIZE SZ_16K
 #define CAPTURE_HEAP_SIZE SZ_64K
+
+/* mmap pcm offload buffer size */
+#define OFFLOAD_HEAP_SIZE SZ_8M
+#define AOC_MMAP_OFFLOAD_PLAYBACK_SERVICE "audio_playback6"
 
 #define DT_PROPERTY_NOT_FOUND 0xffffffff
 
@@ -116,9 +117,12 @@ struct aoc_prvdata {
 	struct dma_heap *sensor_heap;
 	struct dma_heap *audio_playback_heap;
 	struct dma_heap *audio_capture_heap;
+	struct dma_heap *audio_offload_heap;
+
 	phys_addr_t sensor_heap_base;
 	phys_addr_t audio_playback_heap_base;
 	phys_addr_t audio_capture_heap_base;
+	phys_addr_t audio_offload_heap_base;
 
 	int watchdog_irq;
 	struct work_struct watchdog_work;
@@ -236,6 +240,10 @@ void aoc_set_map_handler(struct aoc_service_dev *dev, aoc_map_handler handler,
 void aoc_remove_map_handler(struct aoc_service_dev *dev);
 void aoc_trigger_watchdog(const char *reason);
 
+extern u32 gs_chipid_get_revision(void);
+extern u32 gs_chipid_get_type(void);
+extern u32 gs_chipid_get_product_id(void);
+
 bool aoc_release_from_reset(struct aoc_prvdata *prvdata);
 
 void *aoc_sram_translate(u32 offset);
@@ -257,6 +265,8 @@ void aoc_configure_hardware(struct aoc_prvdata *prvdata);
 void trigger_aoc_ramdump(struct aoc_prvdata *prvdata);
 
 bool aoc_create_dma_buf_heaps(struct aoc_prvdata *prvdata);
+
+bool aoc_set_dma_buf_as_ring(struct aoc_prvdata *prvdata);
 
 phys_addr_t aoc_dram_translate_to_aoc(struct aoc_prvdata *p, phys_addr_t addr);
 
@@ -350,4 +360,3 @@ enum AOC_FIRMWARE_INFORMATION {
 	module_driver(__aoc_driver, aoc_driver_register, aoc_driver_unregister)
 
 #endif /* __KERNEL__ */
-#endif /* AOC_H */
