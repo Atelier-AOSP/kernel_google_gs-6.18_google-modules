@@ -30,7 +30,7 @@
 #include "mali_kbase_config_platform.h"
 #include "pixel_gpu_control.h"
 #include "pixel_gpu_trace.h"
-#include <trace/events/clock.h>
+#include <trace/events/power.h>
 #include <trace/hooks/systrace.h>
 
 /*
@@ -78,7 +78,7 @@ _Static_assert(GPU_POWER_LEVEL_NUM < ((uint8_t)(~0U)), "gpu_power_state must fit
  * @_reserved:        Bytes reserved for future use
  **/
 struct pixel_rail_state_metadata {
-	char magic[4];
+	char magic[4] __nonstring;
 	uint8_t version;
 	uint64_t log_address;
 	uint32_t log_offset;
@@ -292,7 +292,7 @@ static int gpu_pm_power_on_top_nolock(struct kbase_device *kbdev)
 		google_init_gpu_ratio(pc->pm.bcl_dev);
 #endif
 
-#if !IS_ENABLED(CONFIG_SOC_GS101) && defined(CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING)
+#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
 	ATRACE_BEGIN("SMC_PROTECTION_ENABLE");
 	if (exynos_smc(SMC_PROTECTION_SET, 0, PROT_G3D, SMC_PROTECTION_ENABLE) != 0) {
 		dev_err(kbdev->dev, "Couldn't enable protected mode after GPU power-on");
@@ -350,7 +350,7 @@ static void gpu_pm_power_off_top_nolock(struct kbase_device *kbdev)
 	}
 
 	if (pc->pm.state == GPU_POWER_LEVEL_GLOBAL) {
-#if !IS_ENABLED(CONFIG_SOC_GS101) && defined(CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING)
+#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
 		if (exynos_smc(SMC_PROTECTION_SET, 0, PROT_G3D, SMC_PROTECTION_DISABLE) != 0) {
 			dev_err(kbdev->dev, "Couldn't disable protected mode before GPU power-off");
 		}

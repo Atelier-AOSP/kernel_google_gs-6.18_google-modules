@@ -65,11 +65,6 @@ extern struct kbase_clk_rate_trace_op_conf pixel_clk_rate_trace_ops;
 
 extern struct kbase_platform_funcs_conf platform_funcs;
 
-#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
-#define PLATFORM_PROTECTED_CALLBACKS (&pixel_protected_ops);
-extern struct protected_mode_ops pixel_protected_ops;
-#endif /* CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING */
-
 /**
  * DVFS Utilization evaluation period
  *
@@ -81,6 +76,7 @@ extern struct protected_mode_ops pixel_protected_ops;
 /* Linux includes */
 #ifdef CONFIG_MALI_MIDGARD_DVFS
 #include <linux/atomic.h>
+#include <linux/hashtable.h>
 #include <linux/thermal.h>
 #include <linux/workqueue.h>
 #endif /* CONFIG_MALI_MIDGARD_DVFS */
@@ -233,9 +229,6 @@ struct gpu_dvfs_qos_vote;
 struct gpu_dvfs_metrics_uid_stats;
 #endif /* CONFIG_MALI_MIDGARD_DVFS */
 
-/* Forward declaration of gpu_uevent_ctx */
-struct gpu_uevent_ctx;
-
 /**
  * struct pixel_context - Pixel GPU context
  *
@@ -303,9 +296,12 @@ struct gpu_uevent_ctx;
  * @dvfs.metrics.work_uid_stats:   An array of pointers to the per-UID stats blocks currently
  *                                 resident in each of the GPU's job slots, or CSG slots.
  *                                 Access is controlled by the dvfs.metrics.lock.
- * @dvfs.metrics.uid_stats_list:   List head pointer to the linked list of per-UID stats blocks.
- *                                 Modification to the linked list itself (not its elements) is
- *                                 protected by the kctx_list lock.
+ * @dvfs.metrics.uid_stats_table:  8-bits hash table of the per-UID stats blocks.
+ *                                 Modification to the hash table itself and to its elements is
+ *                                 protected by the dvfs.metrics.lock.
+ *                                 Reading of the elements is also protected by the same lock.
+ *                                 Elements are only added and never removed at run-time, so the
+ *                                 removal of all elements on destruction is not protected.
  *
  * @dvfs.governor.curr:  The currently enabled DVFS governor.
  * @dvfs.governor.delay: Governor specific variable. The basic governor uses this to store the
@@ -360,10 +356,6 @@ struct pixel_context {
 		unsigned int top_suspend_hysteresis_time_ms;
 #endif /* CONFIG_MALI_PIXEL_GPU_SLEEP */
 	} pm;
-
-#ifdef CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING
-	bool tz_protection_enabled;
-#endif /* CONFIG_MALI_PIXEL_GPU_SECURE_RENDERING */
 
 #ifdef CONFIG_MALI_MIDGARD_DVFS
 	struct {
@@ -422,7 +414,7 @@ struct pixel_context {
 #else
 			struct gpu_dvfs_metrics_uid_stats *work_uid_stats[MAX_SUPPORTED_CSGS];
 #endif /* !MALI_USE_CSF */
-			struct list_head uid_stats_list;
+			DECLARE_HASHTABLE(uid_stats_table, 8);
 		} metrics;
 #if MALI_USE_CSF
 		struct {
@@ -471,7 +463,7 @@ struct pixel_context {
 	} itmon;
 #endif
 #ifndef PIXEL_GPU_SLC_ACPM_SIGNAL
-	atomic_t slc_demand;
+	atomic64_t slc_demand;
 #endif /* PIXEL_GPU_SLC_ACPM_SIGNAL */
 
 	struct gpu_uevent_ctx gpu_uevent_ctx;
@@ -490,7 +482,7 @@ struct pixel_platform_data {
 	struct gpu_dvfs_metrics_uid_stats* stats;
 	int slc_vote;
 #ifndef PIXEL_GPU_SLC_ACPM_SIGNAL
-	atomic_t slc_demand;
+	atomic64_t slc_demand;
 #endif /* PIXEL_GPU_SLC_ACPM_SIGNAL */
 };
 

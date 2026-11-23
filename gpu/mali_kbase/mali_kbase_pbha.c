@@ -19,16 +19,12 @@
  *
  */
 
-#include <linux/cleanup.h>
-
 #include "mali_kbase_pbha.h"
 
 #include <device/mali_kbase_device.h>
 #include <mali_kbase.h>
 
-#if MALI_USE_CSF
 #define DTB_SET_SIZE 2
-#endif
 
 static bool read_setting_valid(unsigned int prod_model, unsigned int id, unsigned int read_setting)
 {
@@ -166,7 +162,6 @@ int kbase_pbha_record_settings(struct kbase_device *kbdev, bool runtime, unsigne
 		unsigned int const sysc_alloc_num = id / sizeof(u32);
 		u32 modified_reg;
 
-#if MALI_USE_CSF
 		if (runtime) {
 			uint i;
 
@@ -177,9 +172,6 @@ int kbase_pbha_record_settings(struct kbase_device *kbdev, bool runtime, unsigne
 					kbase_reg_read32(kbdev, GPU_SYSC_ALLOC_OFFSET(i));
 			kbase_pm_context_idle(kbdev);
 		}
-#else
-		CSTD_UNUSED(runtime);
-#endif /* MALI_USE_CSF */
 
 		modified_reg = kbdev->sysc_alloc[sysc_alloc_num];
 
@@ -226,7 +218,6 @@ int kbase_pbha_record_settings(struct kbase_device *kbdev, bool runtime, unsigne
 
 void kbase_pbha_write_settings(struct kbase_device *kbdev)
 {
-#if MALI_USE_CSF
 	if (kbasep_pbha_supported(kbdev)) {
 		uint i;
 
@@ -251,12 +242,8 @@ void kbase_pbha_write_settings(struct kbase_device *kbdev)
 		kbase_reg_write32(kbdev, GPU_SYSC_PBHA_OVERRIDE_OFFSET(reg_index),
 				  pbha_override_val);
 	}
-#else
-	CSTD_UNUSED(kbdev);
-#endif /* MALI_USE_CSF */
 }
 
-#if MALI_USE_CSF
 static int kbase_pbha_read_int_id_override_property(struct kbase_device *kbdev,
 						    const struct device_node *pbha_node)
 {
@@ -378,12 +365,10 @@ static int kbase_pbha_read_mma_wa_id_property(struct kbase_device *kbdev,
 	kbdev->mma_wa_id = mma_wa_id;
 	return 0;
 }
-#endif /* MALI_USE_CSF */
 
 int kbase_pbha_read_dtb(struct kbase_device *kbdev)
 {
-#if MALI_USE_CSF
-	struct device_node *pbha_node __free(device_node) = NULL;
+	const struct device_node *pbha_node;
 	int err;
 
 	if (!kbasep_pbha_supported(kbdev))
@@ -406,7 +391,4 @@ int kbase_pbha_read_dtb(struct kbase_device *kbdev)
 	err = kbase_pbha_read_mma_wa_id_property(kbdev, pbha_node);
 
 	return err;
-#else
-	return 0;
-#endif
 }

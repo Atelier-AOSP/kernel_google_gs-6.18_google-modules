@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2014-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2014-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -257,7 +257,7 @@ static int kbase_devfreq_status(struct device *dev, struct devfreq_dev_status *s
 	stat->current_frequency = kbdev->current_nominal_freq;
 	stat->private_data = NULL;
 
-#if MALI_USE_CSF && defined CONFIG_DEVFREQ_THERMAL
+#if defined CONFIG_DEVFREQ_THERMAL
 	kbase_ipa_reset_data(kbdev);
 #endif
 
@@ -393,6 +393,7 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 #else
 	struct device_node *opp_node =
 		of_parse_phandle(kbdev->dev->of_node, "operating-points-v2", 0);
+	struct device_node *node;
 	unsigned int i = 0;
 	int count;
 	u64 shader_present = kbdev->gpu_props.shader_present;
@@ -408,7 +409,7 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 	if (!kbdev->devfreq_table)
 		return -ENOMEM;
 
-	for_each_available_child_of_node_scoped(opp_node, node) {
+	for_each_available_child_of_node(opp_node, node) {
 		const void *core_count_p;
 		u64 core_mask, opp_freq, real_freqs[BASE_MAX_NR_CLOCKS_REGULATORS];
 		int err;
@@ -456,7 +457,6 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 				opp_freq);
 			continue;
 		}
-#if MALI_USE_CSF
 		if (kbase_csf_dev_has_ne(kbdev)) {
 			u64 neural_present = kbdev->gpu_props.neural_present;
 			u64 sc_with_ne = shader_present & neural_present;
@@ -480,7 +480,6 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 				continue;
 			}
 		}
-#endif /* MALI_USE_CSF */
 
 		core_count_p = of_get_property(node, "opp-core-count", NULL);
 		if (core_count_p) {

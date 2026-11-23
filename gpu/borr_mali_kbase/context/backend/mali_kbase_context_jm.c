@@ -69,6 +69,16 @@ void kbase_context_debugfs_term(struct kbase_context *const kctx)
 KBASE_EXPORT_SYMBOL(kbase_context_debugfs_term);
 #endif /* CONFIG_DEBUG_FS */
 
+/* b458836425 extended diagnostics */
+struct free_caller {
+	struct kbase_context *kctx;
+	unsigned long store[64];
+	unsigned int entries;
+};
+struct free_caller ctx_free_fifo[128];
+int ctx_free_next;
+static DEFINE_SPINLOCK(ctx_free_lock);
+
 static int kbase_context_kbase_kinstr_jm_init(struct kbase_context *kctx)
 {
 	return kbase_kinstr_jm_init(&kctx->kinstr_jm);
@@ -119,9 +129,34 @@ static void kbase_context_flush_jobs(struct kbase_context *kctx)
  */
 static void kbase_context_free(struct kbase_context *kctx)
 {
-	kbase_timeline_post_kbase_context_destroy(kctx);
+	unsigned long flags = 0;
+	struct kbase_context *kctx_old = NULL;
 
-	vfree(kctx);
+	spin_lock_irqsave(&ctx_free_lock, flags);
+	for (int i = 0; i < ARRAY_SIZE(ctx_free_fifo); ++i) {
+		if (ctx_free_fifo[i].kctx == kctx) {
+			pr_err("Double-free for kctx %p detected\n First caller:\n", kctx);
+			stack_trace_print(ctx_free_fifo[i].store, ctx_free_fifo[i].entries, 4);
+			pr_err("Second caller below\n");
+			BUG();
+		}
+	}
+
+	kctx_old = ctx_free_fifo[ctx_free_next].kctx;
+
+	ctx_free_fifo[ctx_free_next].kctx = kctx;
+	ctx_free_fifo[ctx_free_next].entries = stack_trace_save(ctx_free_fifo[ctx_free_next].store,
+	                                                        ARRAY_SIZE(ctx_free_fifo[ctx_free_next].store),
+	                                                        0);
+	ctx_free_next++;
+	if (ctx_free_next >= ARRAY_SIZE(ctx_free_fifo))
+		ctx_free_next = 0;
+	spin_unlock_irqrestore(&ctx_free_lock, flags);
+
+	if (kctx_old) {
+		kbase_timeline_post_kbase_context_destroy(kctx_old);
+		vfree(kctx_old);
+	}
 }
 
 static const struct kbase_context_init context_init[] = {
@@ -231,13 +266,14 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	if (WARN_ON(!kbdev))
 		return;
 
-	/* Context termination could happen whilst the system suspend of
+		/* Context termination could happen whilst the system suspend of
 	 * the GPU device is ongoing or has completed. It has been seen on
 	 * Customer side that a hang could occur if context termination is
 	 * not blocked until the resume of GPU device.
 	 */
-	if (kbase_has_arbiter(kbdev))
-		atomic_inc(&kbdev->pm.gpu_users_waiting);
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	atomic_inc(&kbdev->pm.gpu_users_waiting);
+#endif /* CONFIG_MALI_ARBITER_SUPPORT */
 	while (kbase_pm_context_active_handle_suspend(kbdev,
 						      KBASE_PM_SUSPEND_HANDLER_DONT_INCREASE)) {
 		dev_dbg(kbdev->dev, "Suspend in progress when destroying context");
@@ -254,8 +290,9 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	 */
 	wait_event(kbdev->pm.resume_wait, !kbase_pm_is_resuming(kbdev));
 
-	if (kbase_has_arbiter(kbdev))
-		atomic_dec(&kbdev->pm.gpu_users_waiting);
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	atomic_dec(&kbdev->pm.gpu_users_waiting);
+#endif /* CONFIG_MALI_ARBITER_SUPPORT */
 
 	kbase_mem_pool_group_mark_dying(&kctx->mem_pools);
 

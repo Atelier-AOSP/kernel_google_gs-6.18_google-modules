@@ -111,8 +111,8 @@ static void gpu_slc_liveness_update(struct kbase_context* kctx,
 	WARN_ON_ONCE(current_demand != 0);
 
 	/* Update the demand */
-	old_demand = atomic_xchg(&kctx_pd->slc_demand, peak_demand);
-	atomic_add(peak_demand - old_demand, &pc->slc_demand);
+	old_demand = atomic64_xchg(&kctx_pd->slc_demand, peak_demand);
+	atomic64_add(peak_demand - old_demand, &pc->slc_demand);
 }
 
 /**
@@ -222,6 +222,9 @@ void gpu_slc_kctx_term(struct kbase_context *kctx)
 {
 	struct pixel_platform_data *pd = kctx->platform_data;
 
+	lockdep_assert_held(&kctx->kbdev->hwaccess_lock);
+
+
 	/* Contexts can be terminated without being idled first */
 	if (transition(&pd->slc_vote, VOTING, IDLE))
 		pixel_mgm_slc_dec_refcount(kctx->kbdev->mgm_dev);
@@ -230,8 +233,8 @@ void gpu_slc_kctx_term(struct kbase_context *kctx)
 	{
 		struct pixel_context* pc = kctx->kbdev->platform_context;
 		/* Deduct the usage and demand, freeing that SLC space for the next update */
-		u64 kctx_demand = atomic_xchg(&pd->slc_demand, 0);
-		atomic_sub(kctx_demand, &pc->slc_demand);
+		u64 kctx_demand = atomic64_xchg(&pd->slc_demand, 0);
+		atomic64_sub(kctx_demand, &pc->slc_demand);
 	}
 #endif /* PIXEL_GPU_SLC_ACPM_SIGNAL */
 }
@@ -243,9 +246,13 @@ void gpu_slc_kctx_term(struct kbase_context *kctx)
  */
 void gpu_slc_kctx_active(struct kbase_context *kctx)
 {
-	struct pixel_platform_data *pd = kctx->platform_data;
+	struct pixel_platform_data *pd;
 
 	lockdep_assert_held(&kctx->kbdev->hwaccess_lock);
+
+	pd = kctx->platform_data;
+	if (!pd)
+		return;
 
 	if (transition(&pd->slc_vote, IDLE, VOTING))
 		pixel_mgm_slc_inc_refcount(kctx->kbdev->mgm_dev);
@@ -258,9 +265,13 @@ void gpu_slc_kctx_active(struct kbase_context *kctx)
  */
 void gpu_slc_kctx_idle(struct kbase_context *kctx)
 {
-	struct pixel_platform_data *pd = kctx->platform_data;
+	struct pixel_platform_data *pd;
 
 	lockdep_assert_held(&kctx->kbdev->hwaccess_lock);
+
+	pd = kctx->platform_data;
+	if (!pd)
+		return;
 
 	if (transition(&pd->slc_vote, VOTING, IDLE))
 		pixel_mgm_slc_dec_refcount(kctx->kbdev->mgm_dev);
@@ -276,7 +287,7 @@ void gpu_slc_tick_tock(struct kbase_device *kbdev)
 #ifndef PIXEL_GPU_SLC_ACPM_SIGNAL
 	struct pixel_context* pc = kbdev->platform_context;
 	/* Threshold of 4MB */
-	u64 signal = atomic_read(&pc->slc_demand) / (4 << 20);
+	u64 signal = atomic64_read(&pc->slc_demand) / (4 << 20);
 
 	pixel_mgm_slc_update_signal(kbdev->mgm_dev, signal);
 #else

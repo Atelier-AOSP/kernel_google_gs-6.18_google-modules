@@ -1325,7 +1325,11 @@ void kbase_jd_done_worker(struct kthread_work *data)
 	}
 
 	if ((katom->event_code != BASE_JD_EVENT_DONE) && !kbase_ctx_flag(katom->kctx, KCTX_DYING) &&
-	    !kbase_ctx_flag(katom->kctx, KCTX_PAGE_FAULT_REPORT_SKIP))
+	    !kbase_ctx_flag(katom->kctx, KCTX_PAGE_FAULT_REPORT_SKIP)
+#ifdef MALI_ARBITER_SUPPORT
+	    && !kbase_pm_is_gpu_lost(kbdev)
+#endif
+	)
 		dev_err(kbdev->dev, "t6xx: GPU fault 0x%02lx from job slot %d\n",
 			(unsigned long)katom->event_code, katom->slot_nr);
 
@@ -1597,7 +1601,7 @@ void kbase_jd_zap_context(struct kbase_context *kctx)
 	 * queued outside the job scheduler.
 	 */
 
-	timer_delete_sync(&kctx->soft_job_timeout);
+	del_timer_sync(&kctx->soft_job_timeout);
 	list_for_each_safe(entry, tmp, &kctx->waiting_soft_jobs) {
 		katom = list_entry(entry, struct kbase_jd_atom, queue);
 		kbase_cancel_soft_job(katom);

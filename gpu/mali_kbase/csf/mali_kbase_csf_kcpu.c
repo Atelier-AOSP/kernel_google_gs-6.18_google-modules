@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2018-2024 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2018-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -1418,7 +1418,7 @@ static void kbasep_kcpu_fence_wait_cancel(struct kbase_kcpu_command_queue *kcpu_
 		 * the timer would already have been deactivated inside
 		 * kbase_csf_fence_wait_callback().
 		 */
-		timer_delete_sync(&kcpu_queue->fence_timeout);
+		del_timer_sync(&kcpu_queue->fence_timeout);
 #endif
 		if (removed)
 			KBASE_KTRACE_ADD_CSF_KCPU(kctx->kbdev, KCPU_FENCE_WAIT_END, kcpu_queue,
@@ -1610,7 +1610,7 @@ static int kbase_kcpu_fence_wait_prepare(struct kbase_kcpu_command_queue *kcpu_q
 static void fence_signal_timeout_start(struct kbase_kcpu_command_queue *kcpu_queue)
 {
 	struct kbase_device *kbdev = kcpu_queue->kctx->kbdev;
-	unsigned int wait_ms = kbase_get_timeout_ms(kbdev, KCPU_FENCE_SIGNAL_TIMEOUT);
+	unsigned int wait_ms = kbdev->kcpu_fence_signal_timeout_ms;
 
 	if (atomic_read(&kbdev->fence_signal_timeout_enabled))
 		mod_timer(&kcpu_queue->fence_signal_timeout, jiffies + msecs_to_jiffies(wait_ms));
@@ -1664,7 +1664,7 @@ static int kbase_kcpu_fence_force_signal_process(struct kbase_kcpu_command_queue
 #endif
 
 	/* dma_fence refcount needs to be decreased to release it. */
-	dma_fence_put(fence_info->fence);
+	kbase_fence_put(fence_info->fence);
 	fence_info->fence = NULL;
 
 	return ret;
@@ -1700,6 +1700,7 @@ static void kcpu_force_signal_fence(struct kbase_kcpu_command_queue *kcpu_queue)
 
 			/* set ETIMEDOUT error flag before signal the fence*/
 			dma_fence_set_error_helper(fence, -ETIMEDOUT);
+			kbase_fence_put(fence);
 
 			/* force signal fence */
 			status =
@@ -1719,17 +1720,26 @@ static void kcpu_force_signal_fence(struct kbase_kcpu_command_queue *kcpu_queue)
 	 */
 	atomic_set(&kcpu_queue->fence_signal_pending_cnt, 0);
 #ifdef CONFIG_MALI_FENCE_DEBUG
-	del = timer_delete_sync(&kcpu_queue->fence_signal_timeout);
+	del = del_timer_sync(&kcpu_queue->fence_signal_timeout);
 	dev_info(kctx->kbdev->dev, "kbase KCPU [%pK] delete fence signal timeout timer ret: %d",
 		 kcpu_queue, del);
 #else
-	timer_delete_sync(&kcpu_queue->fence_signal_timeout);
+	del_timer_sync(&kcpu_queue->fence_signal_timeout);
 #endif
 }
 
 static void kcpu_queue_force_fence_signal(struct kbase_kcpu_command_queue *kcpu_queue)
 {
+	struct kbase_context *const kctx = kcpu_queue->kctx;
+
 	mutex_lock(&kcpu_queue->lock);
+	/* If we have additional pending fence signal commands in the queue, re-arm for the
+	 * remaining fence signal commands, and dump the work to dmesg, only if the
+	 * global configuration option is set.
+	 */
+	if (atomic_read(&kctx->kbdev->fence_signal_timeout_enabled) &&
+	    atomic_read(&kcpu_queue->fence_signal_pending_cnt) > 1)
+		fence_signal_timeout_start(kcpu_queue);
 	kcpu_force_signal_fence(kcpu_queue);
 	mutex_unlock(&kcpu_queue->lock);
 }
@@ -1752,16 +1762,8 @@ static void fence_signal_timeout_cb(struct timer_list *timer)
 	dev_warn(kctx->kbdev->dev, "kbase KCPU fence signal timeout callback triggered");
 #endif
 
-	/* If we have additional pending fence signal commands in the queue, re-arm for the
-	 * remaining fence signal commands, and dump the work to dmesg, only if the
-	 * global configuration option is set.
-	 */
-	if (atomic_read(&kctx->kbdev->fence_signal_timeout_enabled)) {
-		if (atomic_read(&kcpu_queue->fence_signal_pending_cnt) > 1)
-			fence_signal_timeout_start(kcpu_queue);
-
+	if (atomic_read(&kctx->kbdev->fence_signal_timeout_enabled))
 		kthread_queue_work(&kctx->csf.kcpu_queues.csf_kcpu_worker, &kcpu_queue->timeout_work);
-	}
 }
 
 static int kbasep_kcpu_fence_signal_process(struct kbase_kcpu_command_queue *kcpu_queue,
@@ -1797,13 +1799,13 @@ static int kbasep_kcpu_fence_signal_process(struct kbase_kcpu_command_queue *kcp
 #endif
 	} else {
 #ifdef CONFIG_MALI_FENCE_DEBUG
-		int del = timer_delete_sync(&kcpu_queue->fence_signal_timeout);
+		int del = del_timer_sync(&kcpu_queue->fence_signal_timeout);
 
 		dev_dbg(kctx->kbdev->dev, "kbase KCPU delete fence signal timeout timer ret: %d",
 			del);
 		CSTD_UNUSED(del);
 #else
-		timer_delete_sync(&kcpu_queue->fence_signal_timeout);
+		del_timer_sync(&kcpu_queue->fence_signal_timeout);
 #endif
 	}
 
@@ -1862,6 +1864,8 @@ static int kbasep_kcpu_fence_signal_init(struct kbase_kcpu_command_queue *kcpu_q
 		goto fd_flags_fail;
 	}
 
+	__module_get(THIS_MODULE);
+	kcpu_fence->module = THIS_MODULE;
 	fence->basep.fd = *fd;
 
 	current_command->type = BASE_KCPU_COMMAND_TYPE_FENCE_SIGNAL;
@@ -2096,8 +2100,9 @@ static int delete_queue(struct kbase_context *kctx, u32 id)
 		 * kbase_csf_scheduler_kthread() if any. By this point the
 		 * queue would be empty so this would be a no-op.
 		 */
-		kbase_csf_scheduler_wait_for_kthread_pending_work(kctx->kbdev,
-								  &queue->pending_kick);
+		complete(&kctx->kbdev->csf.scheduler.kcpuq_kthread_signal);
+		wait_event(kctx->kbdev->csf.scheduler.kcpuq_cmds_completed,
+			   atomic_read(&queue->pending_kick) == 0);
 
 		kthread_cancel_work_sync(&queue->work);
 		mutex_destroy(&queue->lock);
@@ -2896,7 +2901,7 @@ int kbase_csf_kcpu_queue_halt_timers(struct kbase_device *kbdev)
 			mutex_lock(&kcpu_queue->lock);
 
 			if (atomic_read(&kcpu_queue->fence_signal_pending_cnt)) {
-				int ret = timer_delete_sync(&kcpu_queue->fence_signal_timeout);
+				int ret = del_timer_sync(&kcpu_queue->fence_signal_timeout);
 
 				dev_dbg(kbdev->dev,
 					"Fence signal timeout on KCPU queue(%lu), kctx (%d_%d) was %s on suspend",
@@ -2906,7 +2911,7 @@ int kbase_csf_kcpu_queue_halt_timers(struct kbase_device *kbdev)
 
 #ifdef CONFIG_MALI_FENCE_DEBUG
 			if (kcpu_queue->fence_wait_processed) {
-				int ret = timer_delete_sync(&kcpu_queue->fence_timeout);
+				int ret = del_timer_sync(&kcpu_queue->fence_timeout);
 
 				dev_dbg(kbdev->dev,
 					"Fence wait timeout on KCPU queue(%lu), kctx (%d_%d) was %s on suspend",

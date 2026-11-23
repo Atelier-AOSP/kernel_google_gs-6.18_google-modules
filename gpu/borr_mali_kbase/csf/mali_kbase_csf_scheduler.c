@@ -34,7 +34,7 @@
 #include <csf/mali_kbase_csf_registers.h>
 #include <uapi/gpu/arm/midgard/mali_base_kernel.h>
 #include <mali_kbase_hwaccess_time.h>
-#include <trace/events/clock.h>
+#include <trace/events/power.h>
 #include "mali_kbase_csf_tiler_heap.h"
 #include "mali_kbase_csf_tiler_heap_reclaim.h"
 #include "mali_kbase_csf_mcu_shared_reg.h"
@@ -2833,8 +2833,6 @@ static bool cleanup_csg_slot(struct kbase_queue_group *group)
 
 	unassign_user_doorbell_from_group(kbdev, group);
 
-	kbasep_platform_event_work_end(group);
-
 	/* The csg does not need cleanup other than drop its AS */
 	spin_lock_irqsave(&kctx->kbdev->hwaccess_lock, flags);
 	as_fault = kbase_ctx_flag(kctx, KCTX_AS_DISABLED_ON_FAULT);
@@ -3111,7 +3109,6 @@ skip_fw:
 				 (((u64)ep_cfg) << 32) | ((((u32)kctx->as_nr) & 0xF) << 16) |
 					 (state & (CSG_REQ_STATE_MASK >> CS_REQ_STATE_SHIFT)));
 
-	kbasep_platform_event_work_begin(group);
 	/* Update the heap reclaim manager */
 	kbase_csf_tiler_heap_reclaim_sched_notify_grp_active(group);
 
@@ -6976,8 +6973,8 @@ int kbase_csf_scheduler_init(struct kbase_device *kbdev)
 #endif /* !CONFIG_MALI_NO_MALI */
 
 	spin_lock_init(&scheduler->gpu_metrics_lock);
-	hrtimer_setup(&scheduler->gpu_metrics_timer, gpu_metrics_timer_callback,
-		     CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
+	hrtimer_init(&scheduler->gpu_metrics_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
+	scheduler->gpu_metrics_timer.function = gpu_metrics_timer_callback;
 #endif /* CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD */
 
 	atomic_set(&scheduler->gpu_idle_timer_enabled, false);
@@ -7008,8 +7005,8 @@ int kbase_csf_scheduler_early_init(struct kbase_device *kbdev)
 	KBASE_KTRACE_ADD(kbdev, SCHED_SUSPENDED, NULL, scheduler->state);
 	scheduler->csg_scheduling_period_ms = CSF_SCHEDULER_TIME_TICK_MS;
 	scheduler_doorbell_init(kbdev);
-	hrtimer_setup(&scheduler->tick_timer, tick_timer_callback,
-		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hrtimer_init(&scheduler->tick_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	scheduler->tick_timer.function = tick_timer_callback;
 
 	atomic_set(&scheduler->pending_sync_update_works, false);
 	spin_lock_init(&scheduler->sync_update_work_ctxs_lock);

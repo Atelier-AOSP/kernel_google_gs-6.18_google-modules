@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2021-2023 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2021-2025 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -963,10 +963,14 @@ static int kbasep_kinstr_prfcnt_put_sample(struct kbase_kinstr_prfcnt_client *cl
 	}
 
 	fetch_idx = atomic_read(&cli->fetch_idx);
-	WARN_ON(read_idx == fetch_idx);
-	/* Setting the read_idx matching the fetch_idx, signals no in-flight
-	 * fetched sample.
-	 */
+	if (unlikely(read_idx == fetch_idx)) {
+		/* No sample was previously fetched; kbasep_kinstr_prfcnt_put_sample was not
+		 * called beforehand.
+		 */
+		err = -EINVAL;
+		goto error_out;
+	}
+
 	atomic_set(&cli->read_idx, fetch_idx);
 
 error_out:
@@ -1273,8 +1277,8 @@ int kbase_kinstr_prfcnt_init(struct kbase_hwcnt_virtualizer *hvirt,
 
 	mutex_init(&kinstr_ctx->lock);
 	INIT_LIST_HEAD(&kinstr_ctx->clients);
-	hrtimer_setup(&kinstr_ctx->dump_timer, kbasep_kinstr_prfcnt_dump_timer,
-		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hrtimer_init(&kinstr_ctx->dump_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	kinstr_ctx->dump_timer.function = kbasep_kinstr_prfcnt_dump_timer;
 	INIT_WORK(&kinstr_ctx->dump_work, kbasep_kinstr_prfcnt_dump_worker);
 
 	*out_kinstr_ctx = kinstr_ctx;

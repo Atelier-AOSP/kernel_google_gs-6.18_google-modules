@@ -51,12 +51,6 @@ static inline void validate_tracepoint_data(struct kbase_gpu_metrics_ctx *gpu_me
 static u64 get_last_cycle_count(struct kbase_device *kbdev)
 {
 	u64 cycles = kbase_backend_get_cycle_cnt(kbdev);
-#if !MALI_USE_CSF
-	if (kbdev->pm.backend.l2_state != KBASE_L2_ON)
-	{
-		cycles = kbdev->last_cycle_count;
-	}
-#endif
 	return cycles;
 }
 
@@ -88,6 +82,8 @@ static void emit_tracepoint_for_active_gpu_metrics_ctx(
 		struct gpu_dvfs_metrics_uid_stats *entry = NULL;
 		unsigned long flags;
 		u8 uid_hash = gpu_dvfs_hash_uid_stats(gpu_metrics_ctx->aid);
+
+		/* Grab the lock before modifying the entry upon a work period event. */
 		spin_lock_irqsave(&pc->dvfs.metrics.lock, flags);
 		hash_for_each_possible(
 				pc->dvfs.metrics.uid_stats_table,

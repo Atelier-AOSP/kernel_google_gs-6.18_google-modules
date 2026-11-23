@@ -348,7 +348,8 @@ static void kbase_gpu_release_atom(struct kbase_device *kbdev, struct kbase_jd_a
 		katom->gpu_rb_state = KBASE_ATOM_GPU_RB_READY;
 		kbase_pm_metrics_update(kbdev, end_timestamp);
 
-		kbasep_platform_event_work_end(katom);
+		/* Inform platform at start/finish of atom */
+		kbasep_platform_event_atom_complete(katom);
 
 		if (katom->core_req & BASE_JD_REQ_PERMON)
 			kbase_pm_release_gpu_cycle_counter_nolock(kbdev);
@@ -424,7 +425,7 @@ static void kbase_gpu_release_atom(struct kbase_device *kbdev, struct kbase_jd_a
 			}
 		}
 
-		if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_TGOX_R1_1234)) {
+		if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_TGOX_R1_1234)) {
 			if (katom->atom_flags & KBASE_KATOM_FLAG_HOLDING_L2_REF_PROT) {
 				kbase_pm_protected_l2_override(kbdev, false);
 				katom->atom_flags &= ~KBASE_KATOM_FLAG_HOLDING_L2_REF_PROT;
@@ -697,7 +698,7 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev, struct kbas
 
 		kbase_pm_protected_entry_override_disable(kbdev);
 
-		if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_TGOX_R1_1234)) {
+		if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_TGOX_R1_1234)) {
 			/*
 			 * Power on L2 caches; this will also result in the
 			 * correct value written to coherency enable register.
@@ -713,13 +714,13 @@ static int kbase_jm_enter_protected_mode(struct kbase_device *kbdev, struct kbas
 
 		katom[idx]->protected_state.enter = KBASE_ATOM_ENTER_PROTECTED_FINISHED;
 
-		if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_TGOX_R1_1234))
+		if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_TGOX_R1_1234))
 			return -EAGAIN;
 
 		/* ***TRANSITION TO HIGHER STATE*** */
 		fallthrough;
 	case KBASE_ATOM_ENTER_PROTECTED_FINISHED:
-		if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_TGOX_R1_1234)) {
+		if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_TGOX_R1_1234)) {
 			/*
 			 * Check that L2 caches are powered and, if so,
 			 * enter protected mode.
@@ -863,7 +864,11 @@ void kbase_backend_slot_update(struct kbase_device *kbdev)
 
 	lockdep_assert_held(&kbdev->hwaccess_lock);
 
-	if (kbase_reset_gpu_is_active(kbdev) || (kbase_is_gpu_removed(kbdev)))
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	if (kbase_reset_gpu_is_active(kbdev) || kbase_is_gpu_removed(kbdev))
+#else
+	if (kbase_reset_gpu_is_active(kbdev))
+#endif
 		return;
 
 	for (js = 0; js < kbdev->gpu_props.num_job_slots; js++) {
@@ -1027,8 +1032,7 @@ void kbase_backend_slot_update(struct kbase_device *kbdev)
 								&katom[idx]->start_timestamp);
 
 					/* Inform platform at start/finish of atom */
-
-					kbasep_platform_event_work_begin(katom[idx]);
+					kbasep_platform_event_atom_submit(katom[idx]);
 #if IS_ENABLED(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD)
 					if (likely(trace_atom_submit_for_gpu_metrics &&
 						   !kbase_jd_katom_is_protected(katom[idx])))
@@ -1232,7 +1236,7 @@ void kbase_gpu_complete_hw(struct kbase_device *kbdev, unsigned int js, u32 comp
 	 * When a hard-stop is followed close after a soft-stop, the completion
 	 * code may be set to STOPPED, even though the job is terminated
 	 */
-	if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_TMIX_8438)) {
+	if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_TMIX_8438)) {
 		if (completion_code == BASE_JD_EVENT_STOPPED &&
 		    (katom->atom_flags & KBASE_KATOM_FLAG_BEEN_HARD_STOPPED)) {
 			completion_code = BASE_JD_EVENT_TERMINATED;
