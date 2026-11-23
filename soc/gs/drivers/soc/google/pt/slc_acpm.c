@@ -10,9 +10,7 @@
  */
 
 #include <linux/list.h>
-#include <linux/mod_devicetable.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/module.h>
 #include <linux/sysctl.h>
 #include <linux/proc_fs.h>
@@ -24,7 +22,6 @@
 #include "../cal-if/acpm_dvfs.h"
 #include <soc/google/acpm_ipc_ctrl.h>
 #include <linux/errno.h>
-#include <linux/err.h>
 #include <linux/debugfs.h>
 
 #define PT_PTID_MAX 64
@@ -40,6 +37,12 @@
 
 #define SLC_PLDTRC 0x6a
 #define SLC_STOP  0x6b
+
+#ifdef CONFIG_SOC_ZUMA
+#define SLC_SIZE_MULTIPLIER 8
+#else
+#define SLC_SIZE_MULTIPLIER 4
+#endif
 
 enum pt_property_index {
 	PT_PROPERTY_INDEX_VPTID = 0,
@@ -191,13 +194,10 @@ static bool slc_version_check(struct slc_acpm_driver_data *driver_data)
 		driver_data->version >> 16,
 		driver_data->version & 0xffff);
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(driver_data->pdev->dev.of_node);
 	sub_node = of_find_node_by_name(driver_data->pdev->dev.of_node,
 					"async");
 	if (IS_ERR(sub_node) || (driver_data->version < PT_VERSION_ASYNC)) {
 		dev_err(&driver_data->pdev->dev, "No asynchronous node");
-		of_node_put(sub_node);
 		return true;
 	}
 
@@ -206,14 +206,10 @@ static bool slc_version_check(struct slc_acpm_driver_data *driver_data)
 					&driver_data->async_id,
 					&driver_data->async_size) < 0) {
 		dev_err(&driver_data->pdev->dev, "No asynchronous channel");
-		of_node_put(sub_node);
 		return true;
 	}
 	dev_info(&driver_data->pdev->dev,
 			"Asynchronous notification enabled");
-
-	/* FIXME: this leaks sub_node */
-
 	return true;
 }
 
@@ -224,15 +220,15 @@ static void slc_acpm_check(struct slc_acpm_driver_data *driver_data)
 {
 	int ret;
 	ptid_t ptid;
-	int size4kB;
+	int sizeReply;
 	unsigned long flags;
 
 	while ((ret = slc_acpm(driver_data, PT_CHECK, 0, 0, NULL)) > 0) {
-		pt_ptid_data_decode(ret, &ptid, &size4kB);
+		pt_ptid_data_decode(ret, &ptid, &sizeReply);
 		if ((ptid >= PT_PTID_MAX) || (ptid < 0)) {
 			dev_err(&driver_data->pdev->dev,
 				"wrong ptid %d size %dK\n",
-				ptid, 4 * size4kB);
+				ptid, SLC_SIZE_MULTIPLIER * sizeReply);
 			/* An out-of-range PTID could be a sign of an ACPM
 			 * protocol error (e.g. ACPM crash or protocol version
 			 * mismatch). Break out of this loop to avoid a
@@ -240,19 +236,20 @@ static void slc_acpm_check(struct slc_acpm_driver_data *driver_data)
 			 */
 			break;
 		}
-		dev_info(&driver_data->pdev->dev,
+		dev_dbg(&driver_data->pdev->dev,
 			 "ptid %d size %dK\n",
-			 ptid, 4 * size4kB);
+			 ptid, SLC_SIZE_MULTIPLIER * sizeReply);
 		if (!driver_data->ptids[ptid].resize) {
-			WARN_ONCE(1, "unallocated ptid %d size %dK\n",
-				  ptid, 4 * size4kB);
+			/*
+			 * ptid was freed
+			 */
 			continue;
 		}
 		spin_lock_irqsave(&driver_data->sl, flags);
 		if (driver_data->ptids[ptid].resize)
 			driver_data->ptids[ptid].resize(
 				driver_data->ptids[ptid].data,
-				size4kB * 4096);
+				SLC_SIZE_MULTIPLIER * 1024 * sizeReply);
 		spin_unlock_irqrestore(&driver_data->sl, flags);
 	}
 }
@@ -366,7 +363,7 @@ static ptid_t slc_acpm_alloc(void *data, int property_index, void *resize_data,
 
 	slc_acpm_check(driver_data);
 
-	dev_info(&driver_data->pdev->dev, "allocated ptid %d\n", ptid);
+	dev_dbg(&driver_data->pdev->dev, "allocated ptid %d\n", ptid);
 	return (int)ptid;
 }
 
@@ -384,16 +381,20 @@ static ptid_t slc_acpm_mutate(void *data, ptid_t ptid, void *resize_data,
 		return PT_PTID_INVALID;
 
 	if (pt_driver_get_property_value(driver_data->driver,
-		new_property_index, 0, &vptid) < 0)
+		new_property_index, PT_PROPERTY_INDEX_VPTID,
+		&vptid) < 0)
 		return PT_PTID_INVALID;
 	if (pt_driver_get_property_value(driver_data->driver,
-		new_property_index, 1, &size_bits) < 0)
+		new_property_index, PT_PROPERTY_INDEX_SIZE_BITS,
+		&size_bits) < 0)
 		return PT_PTID_INVALID;
 	if (pt_driver_get_property_value(driver_data->driver,
-		new_property_index, 2, &priority) < 0)
+		new_property_index, PT_PROPERTY_INDEX_PRIORITY,
+		&priority) < 0)
 		return PT_PTID_INVALID;
 	if (pt_driver_get_property_value(driver_data->driver,
-		new_property_index, 3, &pbha) < 0)
+		new_property_index, PT_PROPERTY_INDEX_PBHA,
+		&pbha) < 0)
 		pbha = 0;
 	if (driver_data->ptids[ptid].pbha != (pbha & PT_PBHA_MASK))
 		return PT_PTID_INVALID;
@@ -441,7 +442,7 @@ static void slc_acpm_enable(void *data, ptid_t ptid)
 		return;
 	slc_acpm_apply(driver_data, ptid, false);
 	slc_acpm_check(driver_data);
-	dev_info(&driver_data->pdev->dev, "enabled ptid %d\n", ptid);
+	dev_dbg(&driver_data->pdev->dev, "enabled ptid %d\n", ptid);
 }
 
 static void slc_acpm_disable(void *data, ptid_t ptid)
@@ -505,8 +506,7 @@ static int slc_acpm_probe(struct platform_device *pdev)
 
 	driver_data->driver = pt_driver_register(pdev->dev.of_node,
 			&slc_acpm_ops, driver_data);
-	if (IS_ERR(driver_data->driver))
-		return PTR_ERR(driver_data->driver);
+	WARN_ON(driver_data->driver == NULL);
 
 	slc_debugfs_init(driver_data);
 

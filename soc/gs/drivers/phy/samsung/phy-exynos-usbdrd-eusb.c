@@ -1447,8 +1447,29 @@ static int exynos_usbdrd_phy_exit(struct phy *phy)
 static void exynos_usbdrd_pipe3_init(struct exynos_usbdrd_phy *phy_drd)
 {
 	struct phy_usb_instance *inst = &phy_drd->phys[1];
+	int ret = 0;
+	union extcon_property_value property = { 0 };
 
 	inst->phy_cfg->phy_isol(inst, 0, inst->pmu_mask);
+
+	if (!phy_drd->edev) {
+		ret = exynos_usbdrd_extcon_register(phy_drd);
+		if (!ret) {
+			if (extcon_get_state(phy_drd->edev, EXTCON_USB)) {
+				ret = extcon_get_property(phy_drd->edev, EXTCON_USB,
+							EXTCON_PROP_USB_TYPEC_POLARITY, &property);
+			} else if (extcon_get_state(phy_drd->edev, EXTCON_USB_HOST)) {
+				ret = extcon_get_property(phy_drd->edev, EXTCON_USB_HOST,
+							EXTCON_PROP_USB_TYPEC_POLARITY, &property);
+			}
+
+			phy_drd->usbphy_info.used_phy_port = property.intval;
+			phy_drd->usbphy_sub_info.used_phy_port = property.intval;
+
+			dev_info(phy_drd->dev, "phy port[%d]\n",
+				 phy_drd->usbphy_info.used_phy_port);
+		}
+	}
 
 	/* Fill USBDP Combo phy init */
 	exynos_usbdrd_pipe3_phy_isol(&phy_drd->phys[1], 0,
@@ -1619,6 +1640,11 @@ static void exynos_usbdrd_pipe3_tune(struct exynos_usbdrd_phy *phy_drd,
 {
 	struct exynos_usb_tune_param *ss_tune_param = phy_drd->usbphy_sub_info.tune_param;
 	int i;
+
+	if (!ss_tune_param) {
+		dev_err(phy_drd->dev, "no tune param\n");
+		return;
+	}
 
 	for (i = 0; ss_tune_param[i].value != EXYNOS_USB_TUNE_LAST; i++) {
 		if (i == EXYNOS_DRD_MAX_TUNEPARAM_NUM)
@@ -1838,6 +1864,7 @@ int exynos_usbdrd_s2mpu_manual_control(bool on)
 	pr_debug("%s s2mpu = %d\n", __func__, on);
 
 	phy_drd = exynos_usbdrd_get_struct();
+
 	if (!phy_drd) {
 		pr_err("[%s] exynos_usbdrd_get_struct error\n", __func__);
 		return -ENODEV;

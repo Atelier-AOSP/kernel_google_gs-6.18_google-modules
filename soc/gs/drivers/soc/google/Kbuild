@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ccflags-y := -DDYNAMIC_DEBUG_MODULE
-CFLAGS_exynos-bcm_dbg.o += -Wno-missing-prototypes
-CFLAGS_exynos-pm.o += -Wno-missing-prototypes
-CFLAGS_exynos_pm_qos.o += -Wno-missing-prototypes
 
 obj-$(CONFIG_GS_CHIPID)			+= gs-chipid.o
 obj-$(CONFIG_CAL_IF)            	+= cal-if/
@@ -36,13 +33,22 @@ obj-$(CONFIG_EXYNOS_BCM_DBG)		+= bcm_dbg.o
 bcm_dbg-$(CONFIG_EXYNOS_BCM_DBG)	+= exynos-bcm_dbg.o exynos-bcm_dbg-dt.o exynos-bcm_dbg-ppmu.o
 obj-$(CONFIG_EXYNOS_BCM_DBG_DUMP)	+= exynos-bcm_dbg-dump.o
 
-# CPIF
-obj-$(CONFIG_EXYNOS_MODEM_IF) += cpif/
+# GNSSIF
+obj-$(CONFIG_EXYNOS_GNSS_IF_SPI) += gnssif_spi/
 
 obj-y				    	+= debug/
 
 # Emerald Hill
 obj-$(CONFIG_GOOGLE_EH) += eh/
+
+# GCMA
+obj-$(CONFIG_GCMA) += gcma/
+
+# Proactive Kill
+obj-$(CONFIG_PROACTIVE_KILL) += pa_kill/
+
+# Smart Readahead
+obj-$(CONFIG_SMRA) += smra/
 
 # S2MPU
 obj-$(CONFIG_GS_S2MPU)			+= s2mpu/
@@ -56,7 +62,7 @@ obj-$(CONFIG_SYSRQ_HOOK)	+= sysrq-hook.o
 # vh/kernel/sched
 obj-$(CONFIG_VH_KERNEL)			+= vh/kernel/
 
-obj-y					+= pixel_stat/
+obj-$(CONFIG_PIXEL_STAT)		+= pixel_stat/
 
 obj-$(CONFIG_DBGCORE_DUMP)		+= dbgcore-dump.o
 
@@ -66,6 +72,12 @@ obj-$(CONFIG_PKVM_S2MPU)		+= pkvm-s2mpu/pkvm-s2mpu/
 
 obj-$(CONFIG_PKVM_S2MPU_V9) 		+= pkvm-s2mpu/pkvm-s2mpu-v9/
 
+# perf_trace_counters
+obj-$(CONFIG_PERF_TRACE_CTRS)		+= perf_trace_counters.o
+
 obj-$(CONFIG_BOOT_CONTROL)	 	+= boot_control/
 
 obj-$(CONFIG_KERNEL_TOP)		+= kernel-top.o
+
+# Modem control interfaces
+obj-$(CONFIG_GOOGLE_MODEMCTL)		+= modemctl/

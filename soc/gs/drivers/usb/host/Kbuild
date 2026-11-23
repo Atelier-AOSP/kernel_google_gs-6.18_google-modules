@@ -4,5 +4,6 @@
 #
 
 ccflags-y			+= -I$(srctree)/drivers/usb
-CFLAGS_xhci-exynos.o += -Wno-missing-prototypes
+
 obj-$(CONFIG_USB_XHCI_EXYNOS)	+= xhci-exynos.o
+obj-$(CONFIG_USB_XHCI_GOOG_DMA)	+= xhci-goog-dma.o

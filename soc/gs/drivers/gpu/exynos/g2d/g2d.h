@@ -19,7 +19,7 @@
 #include <media/exynos_repeater.h>
 #endif
 
-#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
+#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS) || IS_ENABLED(CONFIG_EXYNOS_PM_QOS_MODULE)
 #include <soc/google/exynos_pm_qos.h>
 #endif
 
@@ -100,8 +100,8 @@ struct g2d_qos {
 #define G2D_DEVICE_CAPS_HDR10			BIT(7)
 /* Support HDR conversion for HDR10+ */
 #define G2D_DEVICE_CAPS_HDR10PLUS		BIT(8)
-/*Support SBWC Lossy format */
-#define G2D_DEVICE_CAPS_SBWC_LOSSY              BIT(9)
+/* Support SBWC Lossy format */
+#define G2D_DEVICE_CAPS_SBWC_LOSSY		BIT(9)
 
 struct g2d_device {
 	unsigned long		state;
@@ -145,7 +145,7 @@ struct g2d_device {
 	struct list_head		qos_contexts;
 
 	struct g2d_qos			qos;
-#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
+#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS) || IS_ENABLED(CONFIG_EXYNOS_PM_QOS_MODULE)
 	struct exynos_pm_qos_request	req;
 #endif
 

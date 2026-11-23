@@ -172,6 +172,12 @@ static int __init access_ramoops_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, info);
 
+	mem_region = of_parse_phandle(of_node, "memory-region", 0);
+	if (!mem_region) {
+		dev_err(&pdev->dev, "no memory-region phandle\n");
+		return -ENODEV;
+	}
+
 	ret = of_property_read_string(of_node, "label", &info->label);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to get region label: %d\n", ret);
@@ -182,12 +188,6 @@ static int __init access_ramoops_probe(struct platform_device *pdev)
 	if (!info->name) {
 		dev_err(&pdev->dev, "failed to alloc name\n");
 		return -ENOMEM;
-	}
-
-	mem_region = of_parse_phandle(of_node, "memory-region", 0);
-	if (!mem_region) {
-		dev_err(&pdev->dev, "no memory-region phandle\n");
-		return -ENODEV;
 	}
 
 	ret = of_address_to_resource(mem_region, 0, &res);
@@ -243,6 +243,7 @@ static const struct of_device_id dt_match[] = {
 	{ .compatible = "access_ramoops" },
 	{}
 };
+MODULE_DEVICE_TABLE(of, dt_match);
 
 static struct platform_driver access_ramoops_driver = {
 	.driver		= {

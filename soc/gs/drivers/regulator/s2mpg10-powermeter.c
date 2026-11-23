@@ -19,7 +19,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
-#include <linux/mfd/samsung/s2mpg10-local.h>
+#include <linux/mfd/samsung/s2mpg10.h>
 #include <linux/mfd/samsung/s2mpg10-register.h>
 #include <linux/mfd/samsung/s2mpg1x-meter.h>
 #include <linux/io.h>
@@ -638,7 +638,7 @@ static int s2mpg10_meter_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void s2mpg10_meter_remove(struct platform_device *pdev)
+static int s2mpg10_meter_remove(struct platform_device *pdev)
 {
 	struct s2mpg10_meter *s2mpg10 = platform_get_drvdata(pdev);
 
@@ -652,6 +652,7 @@ static void s2mpg10_meter_remove(struct platform_device *pdev)
 #if IS_ENABLED(CONFIG_DRV_SAMSUNG_PMIC)
 	pmic_device_destroy(s2mpg10->dev->devt);
 #endif
+	return 0;
 }
 
 static void s2mpg10_meter_shutdown(struct platform_device *pdev)

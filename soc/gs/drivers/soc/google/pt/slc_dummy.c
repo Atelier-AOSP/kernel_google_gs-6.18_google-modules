@@ -9,11 +9,8 @@
  * Author: cozette@google.com
  */
 
-#include <linux/err.h>
 #include <linux/list.h>
-#include <linux/mod_devicetable.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/module.h>
 #include <linux/sysctl.h>
 #include <linux/proc_fs.h>
@@ -192,17 +189,14 @@ static int slc_dummy_probe(struct platform_device *pdev)
 		pt_driver_register(pdev->dev.of_node,
 				   &slc_dummy_ops,
 				   driver_data);
-	if (IS_ERR(driver_data->driver))
-		return PTR_ERR(driver_data->driver);
-
 	return 0;
 }
 
 static const struct of_device_id slc_dummy_of_match_table[] = {
 	{ .compatible = "google,pt", },
 	{ },
-
 };
+MODULE_DEVICE_TABLE(of, slc_dummy_of_match_table);
 
 static struct platform_driver slc_dummy_driver = {
 	.probe = slc_dummy_probe,

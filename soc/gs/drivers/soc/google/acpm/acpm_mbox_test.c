@@ -27,10 +27,10 @@
 #include <linux/cpufreq.h>
 #include <soc/google/cal-if.h>
 #include <soc/google/exynos-devfreq.h>
-#include "../cal-if/acpm_dvfs.h"
+#include "../../../soc/google/cal-if/acpm_dvfs.h"
 #if defined(CONFIG_SOC_GS101)
 #include <dt-bindings/clock/gs101.h>
-#include <linux/mfd/samsung/s2mpg10-local.h>
+#include <linux/mfd/samsung/s2mpg10.h>
 #include <linux/mfd/samsung/s2mpg11.h>
 #include <linux/mfd/samsung/rtc-s2mpg10.h>
 #include <dt-bindings/soc/google/gs101-devfreq.h>
@@ -40,9 +40,14 @@
 #include <linux/mfd/samsung/s2mpg13.h>
 #include <linux/mfd/samsung/rtc-s2mpg12.h>
 #include <dt-bindings/soc/google/gs201-devfreq.h>
+#elif defined(CONFIG_SOC_ZUMA)
+#include <dt-bindings/clock/zuma.h>
+#include <linux/mfd/samsung/s2mpg14.h>
+#include <linux/mfd/samsung/s2mpg15.h>
+#include <linux/mfd/samsung/rtc-s2mpg14.h>
+#include <dt-bindings/soc/google/zuma-devfreq.h>
 #endif
 #include <soc/google/acpm_mfd.h>
-#include <soc/google/gs-chipid.h>
 #include <soc/google/pt.h>
 #include <linux/list.h>
 
@@ -793,7 +798,6 @@ static int acpm_mfd_set_pmic(void)
 	p_np = of_parse_phandle(np, "main-pmic", 0);
 	if (p_np) {
 		i2c_main = of_find_i2c_device_by_node(p_np);
-		of_node_put(p_np);
 		if (!i2c_main) {
 			dev_err(mbox->device, "%s: Cannot find main-pmic i2c\n",
 				__func__);
@@ -802,6 +806,8 @@ static int acpm_mfd_set_pmic(void)
 		mbox->mfd->s2mpg_main = i2c_get_clientdata(i2c_main);
 	} else
 		dev_err(mbox->device, "%s: Cannot find main-pmic\n", __func__);
+
+	of_node_put(p_np);
 
 	if (!mbox->mfd->s2mpg_main) {
 		dev_err(mbox->device, "%s: S2MPG-Main device not found\n",
@@ -832,7 +838,6 @@ static int acpm_mfd_set_pmic(void)
 	p_np = of_parse_phandle(np, "sub-pmic", 0);
 	if (p_np) {
 		i2c_sub = of_find_i2c_device_by_node(p_np);
-		of_node_put(p_np);
 		if (!i2c_sub) {
 			dev_err(mbox->device, "%s: Cannot find sub-pmic i2c\n",
 				__func__);
@@ -841,6 +846,8 @@ static int acpm_mfd_set_pmic(void)
 		mbox->mfd->s2mpg_sub = i2c_get_clientdata(i2c_sub);
 	} else
 		dev_err(mbox->device, "%s: Cannot find sub-pmic\n", __func__);
+
+	of_node_put(p_np);
 
 	if (!mbox->mfd->s2mpg_sub) {
 		dev_err(mbox->device, "%s: S2MPG-Sub device not found\n",
@@ -903,6 +910,7 @@ unsigned int acpm_pt_clients_enable(void)
 	unsigned int client_cnt = 0;
 
 	list_for_each_entry(client, slc_pt_list, list) {
+		spin_lock_init(&client->lock);
 		mbox->slc->client_name[client_cnt] = client->node->name;
 		mbox->slc->ptid[client_cnt] = pt_client_enable(client, 0);
 		dev_info(mbox->device, "%s: node name: %s, slc-ptid[%d]: %d\n",
@@ -1058,20 +1066,23 @@ static int dvfs_freq_table_init(void)
 	return 0;
 }
 
-static void acpm_framework_mbox_test(bool start)
+#define IPC_AP_TMU    9
+static void acpm_framework_mbox_test(unsigned int start)
 {
 	if (start) {
 		acpm_mbox_test_init();
 		mbox->slc->client_cnt = acpm_pt_clients_enable();
 
-		queue_delayed_work_on(get_random_for_type(CPU_ID),
-				      mbox->tmu->suspend_wq,
-				      &mbox->tmu->suspend_work,
-				      msecs_to_jiffies(TMU_SUSPEND_RESUME_DELAY));
-		queue_delayed_work_on(get_random_for_type(CPU_ID),
-				      mbox->tmu->rd_tmp_stress_trigger_wq,
-				      &mbox->tmu->rd_tmp_stress_trigger_wk,
-				      msecs_to_jiffies(STRESS_TRIGGER_DELAY));
+		if (start >> IPC_AP_TMU) {
+			queue_delayed_work_on(get_random_for_type(CPU_ID),
+					      mbox->tmu->suspend_wq,
+					      &mbox->tmu->suspend_work,
+					      msecs_to_jiffies(TMU_SUSPEND_RESUME_DELAY));
+			queue_delayed_work_on(get_random_for_type(CPU_ID),
+					      mbox->tmu->rd_tmp_stress_trigger_wq,
+					      &mbox->tmu->rd_tmp_stress_trigger_wk,
+					      msecs_to_jiffies(STRESS_TRIGGER_DELAY));
+		}
 		queue_delayed_work_on(get_random_for_type(CPU_ID),
 				      mbox->dvfs->mbox_stress_trigger_wq,
 				      &mbox->dvfs->mbox_stress_trigger_wk,
@@ -1101,12 +1112,8 @@ static int acpm_mbox_test_setting(struct acpm_info *acpm, u64 subcmd)
 {
 	int ret = 0;
 
-	if (subcmd >= ACPM_MBOX_TEST_CMD_MAX) {
-		dev_err(mbox->device, "%s, sub-cmd:%llu, out of range!\n",
-			__func__, subcmd);
-		return -EINVAL;
-	} else if (ACPM_MBOX_TEST_START == subcmd) {
-		acpm_framework_mbox_test(true);
+	if (ACPM_MBOX_TEST_START & subcmd) {
+		acpm_framework_mbox_test(subcmd);
 	} else if (ACPM_MBOX_TEST_STOP == subcmd) {
 		acpm_framework_mbox_test(false);
 	} else if (ACPM_MBOX_CTRLIST == subcmd) {
@@ -1148,10 +1155,16 @@ static unsigned int get_random_rate(unsigned int dm_id)
 		upper = mbox->dvfs->upper_bound;
 		lower = mbox->dvfs->lower_bound;
 
-		if (lower == upper)
+		if (lower == upper) {
 			index = lower;
-		else
+		} else if (mbox->dvfs->is_steep_jump) {
+			if (dvfs_test->dm[dm_id]->prev_jump_idx == upper)
+				dvfs_test->dm[dm_id]->prev_jump_idx = index = lower;
+			else
+				dvfs_test->dm[dm_id]->prev_jump_idx = index = upper;
+		} else {
 			index = (random % (upper - lower + 1)) + lower;
+		}
 
 		if (index >= dvfs_test->dm[dm_id]->size)
 			index = dvfs_test->dm[dm_id]->size - 1;
@@ -1187,7 +1200,7 @@ static int acpm_dvfs_set_devfreq(unsigned int dm_id, unsigned int rate,
 	latency = after - before;
 
 	if (ret < 0)
-		dev_err(mbox->device, "exynos_devfreq_lock_freq ret=%d\n", ret);
+		dev_err(mbox->device, "exynos_devfreq_lock_freq: dm=%d, ret=%d\n", dm_id, ret);
 
 	mdelay(10);
 
@@ -1398,6 +1411,10 @@ static int dvfs_latency_stats_setting(struct acpm_info *acpm, u64 subcmd)
 	switch (domain) {
 	case ACPM_DVFS_TEST_MIF:
 	case ACPM_DVFS_TEST_INT:
+#if defined(CONFIG_SOC_ZUMA)
+	case ACPM_DVFS_TEST_DSU:
+	case ACPM_DVFS_TEST_BCI:
+#endif
 	case ACPM_DVFS_TEST_INTCAM:
 	case ACPM_DVFS_TEST_TNR:
 	case ACPM_DVFS_TEST_CAM:
@@ -1516,11 +1533,44 @@ static int acpm_mbox_dvfs_setting(struct acpm_info *acpm, u64 subcmd)
 	return 0;
 }
 
+static int acpm_dvfs_steep_jump_setting(struct acpm_info *acpm, u64 subcmd)
+{
+	unsigned int temp;
+
+	mbox->dvfs->lower_bound = ((u32)subcmd >> 8) & 0xFF;
+	mbox->dvfs->upper_bound = (u32)subcmd & 0xFF;
+
+	if (mbox->dvfs->lower_bound > mbox->dvfs->upper_bound) {
+		temp = mbox->dvfs->lower_bound;
+		mbox->dvfs->lower_bound = mbox->dvfs->upper_bound;
+		mbox->dvfs->upper_bound = temp;
+	}
+
+	if (subcmd == 0xFFFF) {
+		acpm_acpm_mbox_dvfs(false);
+		mbox->dvfs->is_given_range = false;
+		mbox->dvfs->is_steep_jump = false;
+	} else {
+		mbox->dvfs->is_given_range = true;
+		mbox->dvfs->is_steep_jump = true;
+		acpm_acpm_mbox_dvfs(true);
+	}
+
+	return 0;
+}
+
 static int debug_acpm_mbox_dvfs_set(void *data, u64 val)
 {
 	struct acpm_info *acpm = (struct acpm_info *)data;
 
 	return acpm_mbox_dvfs_setting(acpm, val);
+}
+
+static int debug_acpm_dvfs_steep_jump_set(void *data, u64 val)
+{
+	struct acpm_info *acpm = (struct acpm_info *)data;
+
+	return acpm_dvfs_steep_jump_setting(acpm, val);
 }
 
 DEFINE_SIMPLE_ATTRIBUTE(debug_acpm_mbox_test_fops,
@@ -1531,6 +1581,8 @@ DEFINE_SIMPLE_ATTRIBUTE(debug_dvfs_latency_stats_fops,
 			"0x%016llx\n");
 DEFINE_SIMPLE_ATTRIBUTE(debug_acpm_mbox_dvfs_fops, NULL,
 			debug_acpm_mbox_dvfs_set, "0x%016llx\n");
+DEFINE_SIMPLE_ATTRIBUTE(debug_acpm_dvfs_steep_jump_fops, NULL,
+			debug_acpm_dvfs_steep_jump_set, "0x%016llx\n");
 
 static void acpm_test_debugfs_init(struct acpm_mbox_test *mbox)
 {
@@ -1543,6 +1595,8 @@ static void acpm_test_debugfs_init(struct acpm_mbox_test *mbox)
 			    &debug_dvfs_latency_stats_fops);
 	debugfs_create_file("acpm_mbox_dvfs", 0644, den_mbox, mbox,
 			    &debug_acpm_mbox_dvfs_fops);
+	debugfs_create_file("acpm_dvfs_steep_jump", 0644, den_mbox, mbox,
+			    &debug_acpm_dvfs_steep_jump_fops);
 }
 
 static int init_domain_freq_table(struct acpm_dvfs_test *dvfs, int dm_id)
@@ -1571,6 +1625,10 @@ static int init_domain_freq_table(struct acpm_dvfs_test *dvfs, int dm_id)
 	switch (cal_id) {
 	case ACPM_DVFS_MIF:
 	case ACPM_DVFS_INT:
+#if defined(CONFIG_SOC_ZUMA)
+	case ACPM_DVFS_DSU:
+	case ACPM_DVFS_BCI:
+#endif
 	case ACPM_DVFS_INTCAM:
 	case ACPM_DVFS_TNR:
 	case ACPM_DVFS_CAM:
@@ -1597,7 +1655,7 @@ static int init_domain_freq_table(struct acpm_dvfs_test *dvfs, int dm_id)
 			dvfs->max_freq = cal_dfs_get_max_freq(cal_id);
 			dvfs->min_freq = cal_dfs_get_min_freq(cal_id);
 			dev_warn(mbox->device,
-				 "%s, cal_id: %d, get boundary failed\n",
+				 "%s, cal_id: 0x%X, get boundary failed\n",
 				 __func__, cal_id);
 		}
 		break;
@@ -1803,7 +1861,7 @@ err_tmu:
 	return ret;
 }
 
-static void acpm_mbox_test_remove(struct platform_device *pdev)
+static int acpm_mbox_test_remove(struct platform_device *pdev)
 {
 	int i;
 
@@ -1843,6 +1901,7 @@ static void acpm_mbox_test_remove(struct platform_device *pdev)
 
 	dev_info(mbox->device, "%s done.\n", __func__);
 	kfree(mbox);
+	return 0;
 }
 
 static const struct of_device_id acpm_mbox_test_match[] = {

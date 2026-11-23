@@ -55,11 +55,11 @@
 #define SBUOVPDIS				BIT(7)
 #define CCOVPDIS				BIT(6)
 #define	SBURPCTRL				BIT(5)
-#define	CCLPMODESEL				GENMASK(4, 3)
+#define	CCLPMODESEL_MASK			GENMASK(4, 3)
 #define LOW_POWER_MODE_DISABLE			0
-#define ULTRA_LOW_POWER_MODE			1
-#define AUTO_ULTRA_LOW_POWER_MODE		3
-#define CCRPCTRL				GENMASK(2, 0)
+#define ULTRA_LOW_POWER_MODE			(1 << 3)
+#define AUTO_ULTRA_LOW_POWER_MODE		(3 << 3)
+#define CCRPCTRL_MASK				GENMASK(2, 0)
 #define TCPCI_CONTROL				0
 #define UA_1_SRC				1
 #define UA_5_SRC				2
@@ -70,18 +70,22 @@
 #define	OPEN					7
 
 #define TCPC_VENDOR_CC_CTRL3			0x8e
-#define CCWTRDEB				GENMASK(7, 6)
+#define CCWTRDEB_MASK				GENMASK(7, 6)
+#define CCWTRDEB_SHIFT				6
 #define CCWTRDEB_1MS				1
-#define CCWTRSEL				GENMASK(5, 3)
+#define CCWTRSEL_MASK				GENMASK(5, 3)
+#define CCWTRSEL_SHIFT				3
 #define CCWTRSEL_1V				0x4
 #define CCWTRSEL_0_6V				0x2
 #define CCLADDERDIS				BIT(2)
-#define WTRCYCLE				GENMASK(0, 0)
+#define WTRCYCLE_MASK				BIT(0)
+#define WTRCYCLE_SHIFT				0
 #define WTRCYCLE_2_4_S				0
 #define WTRCYCLE_4_8_S				1
 
 #define TCPC_VENDOR_ADC_CTRL1			0x91
-#define ADCINSEL				GENMASK(7, 5)
+#define ADCINSEL_MASK				GENMASK(7, 5)
+#define ADC_CHANNEL_OFFSET			5
 #define ADCEN					BIT(0)
 
 #define TCPC_VENDOR_EXTBST_CTRL			0x92

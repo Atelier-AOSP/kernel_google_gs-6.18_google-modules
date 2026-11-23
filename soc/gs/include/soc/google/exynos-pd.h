@@ -60,8 +60,10 @@ struct exynos_pm_domain {
 	struct exynos_bcm_pd_info *bcm;
 #endif
 	bool power_down_skipped;
+	/* Total number of descendants needing sync, including self */
+	atomic_t need_sync;
+	bool turn_off_on_sync;
 	unsigned int need_smc;
-	unsigned int cmu_id;
 	bool skip_idle_ip;
 	bool always_on;
 	struct exynos_pd_stat pd_stat;
@@ -70,7 +72,6 @@ struct exynos_pm_domain {
 
 #if IS_ENABLED(CONFIG_EXYNOS_PD)
 struct exynos_pm_domain *exynos_pd_lookup_name(const char *domain_name);
-void *exynos_pd_lookup_cmu_id(u32 cmu_id);
 int exynos_pd_status(struct exynos_pm_domain *pd);
 int exynos_pd_power_on(struct exynos_pm_domain *pd);
 int exynos_pd_power_off(struct exynos_pm_domain *pd);
@@ -79,11 +80,6 @@ int exynos_pd_get_pd_stat(struct exynos_pm_domain *pd,
 #else
 static inline
 struct exynos_pm_domain *exynos_pd_lookup_name(const char *domain_name)
-{
-	return NULL;
-}
-
-static inline void *exynos_pd_lookup_cmu_id(u32 cmu_id)
 {
 	return NULL;
 }
@@ -125,7 +121,7 @@ static inline void exynos_usbdrd_s2mpu_manual_control(bool on)
 }
 static inline int exynos_usbdrd_set_s2mpu_pm_ops(int (*cb)(struct device *dev, bool on))
 {
-	return;
+	return 0;
 }
 #endif
 

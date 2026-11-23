@@ -188,8 +188,6 @@ int mfc_core_set_dec_codec_buffers(struct mfc_core_ctx *core_ctx)
 	/* set codec buffers */
 	MFC_CORE_WRITEL(buf_addr, MFC_REG_D_SCRATCH_BUFFER_ADDR);
 	MFC_CORE_WRITEL(ctx->scratch_buf_size, MFC_REG_D_SCRATCH_BUFFER_SIZE);
-	mfc_core_info("[FRAME] scratch buf addr: 0x%#llx size %ld\n",
-			buf_addr, ctx->scratch_buf_size);
 	buf_addr += ctx->scratch_buf_size;
 	buf_size -= ctx->scratch_buf_size;
 
@@ -381,7 +379,7 @@ int mfc_core_set_dec_stream_buffer(struct mfc_core *core, struct mfc_ctx *ctx,
 
 	MFC_CORE_WRITEL(strm_size, MFC_REG_D_STREAM_DATA_SIZE);
 	MFC_CORE_WRITEL(addr, MFC_REG_D_CPB_BUFFER_ADDR);
-	MFC_CORE_WRITEL(cpb_buf_size, MFC_REG_D_CPB_BUFFER_SIZE);
+	MFC_CORE_WRITEL(cpb_buf_size + start_num_byte, MFC_REG_D_CPB_BUFFER_SIZE);
 	MFC_CORE_WRITEL(start_num_byte, MFC_REG_D_CPB_BUFFER_OFFSET);
 	ctx->last_src_addr = addr;
 
@@ -475,6 +473,14 @@ int mfc_core_set_enc_stream_buffer(struct mfc_core *core, struct mfc_ctx *ctx,
 		offset = mfc_buf->vb.vb2_buf.planes[0].data_offset;
 		size = (unsigned int)vb2_plane_size(&mfc_buf->vb.vb2_buf, 0);
 		size = ALIGN(size, STREAM_BUF_ALIGN);
+	} else {
+		/*
+		 * When LAST_SEQ of B frame encoding
+		 * if there is no output buffer, set addr and size with 0xffffffff
+		 * and then FW returns COMPLETE_SEQ.
+		 */
+		addr = 0xffffffff;
+		size = 0xffffffff;
 	}
 
 	MFC_CORE_WRITEL(addr, MFC_REG_E_STREAM_BUFFER_ADDR); /* 16B align */
@@ -1045,6 +1051,7 @@ void mfc_core_get_dec_metadata_sei_nal(struct mfc_core *core, struct mfc_ctx *ct
 	struct mfc_dec *dec = ctx->dec_priv;
 	dma_addr_t buf_addr;
 	dma_addr_t offset;
+	dma_addr_t top_addr;
 	unsigned int *sei_addr = NULL;
 	unsigned int *addr;
 	int buf_size, sei_size;
@@ -1076,12 +1083,15 @@ void mfc_core_get_dec_metadata_sei_nal(struct mfc_core *core, struct mfc_ctx *ct
 		return;
 	}
 
-	offset = buf_addr - ctx->metadata_buf.daddr;
-	if (offset < 0) {
-		mfc_ctx_err("[HDR+][META] The metadata offset %pad is wrong\n", &offset);
+	top_addr = ctx->metadata_buf.daddr + ctx->metadata_buf.size - HDR10_PLUS_DATA_SIZE;
+	if ((buf_addr < ctx->metadata_buf.daddr) ||
+		(buf_addr > top_addr)) {
+		mfc_ctx_err("[HDR+][META] The meta daddr %#llx is less than base %#llx or larger than top address(%#llx)\n",
+			buf_addr, ctx->metadata_buf.daddr, top_addr);
 		return;
 	}
 
+	offset = buf_addr - ctx->metadata_buf.daddr;
 	/* SEI data - 0x0: payload type, 0x4: payload size, 0x8: payload data */
 	sei_addr = ctx->metadata_buf.vaddr + offset + MFC_META_SEI_NAL_SIZE_OFFSET;
 	sei_size = *sei_addr;
@@ -1092,9 +1102,14 @@ void mfc_core_get_dec_metadata_sei_nal(struct mfc_core *core, struct mfc_ctx *ct
 				sei_size, buf_size);
 
 	/* HAL needs SEI data size info "size(4 bytes) + SEI data" */
-	sei_size += MFC_META_SEI_NAL_SIZE_OFFSET;
+	sei_size += MFC_META_SEI_NAL_SIZE_OF_FIELD;
 	mfc_debug(2, "[HDR+][META] copy metadata offset %pad size: %d / %d\n",
 			&offset, sei_size, buf_size);
+	if (HDR10_PLUS_DATA_SIZE < sei_size + MFC_META_SEI_NAL_SIZE_OFFSET) {
+		mfc_ctx_err("[HDR+][META] sei_size(%d) is too large to support\n",
+			sei_size);
+		return;
+	}
 
 	memcpy(addr, sei_addr, sei_size);
 	if (hdr_dump == 1) {

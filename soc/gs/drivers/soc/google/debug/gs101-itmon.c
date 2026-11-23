@@ -2253,9 +2253,10 @@ static int itmon_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void itmon_remove(struct platform_device *pdev)
+static int itmon_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

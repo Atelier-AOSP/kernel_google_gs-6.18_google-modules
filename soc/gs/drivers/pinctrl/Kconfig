@@ -3,7 +3,7 @@
 # PINCTRL infrastructure and drivers
 #
 
-source "$(KCONFIG_EXT_PREFIX)drivers/pinctrl/gs/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/pinctrl/gs/Kconfig"
 
 config PINCTRL_SLG51000
 	tristate "Dialog Semiconductor SLG51000 pinctrl driver"
@@ -20,4 +20,3 @@ config PINCTRL_SLG51002
 	help
 	  Say y here to support for the Dialog Semiconductor SLG51002.
 	  The SLG51002 is eight compact and customizable low dropout regulators.
-

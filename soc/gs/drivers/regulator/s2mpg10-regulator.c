@@ -7,10 +7,10 @@
  */
 
 #include <linux/bug.h>
-#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <../drivers/pinctrl/samsung/pinctrl-samsung.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -19,7 +19,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
-#include <linux/mfd/samsung/s2mpg10-local.h>
+#include <linux/mfd/samsung/s2mpg10.h>
 #include <linux/mfd/samsung/s2mpg10-register.h>
 #include <linux/io.h>
 #include <linux/mutex.h>
@@ -312,8 +312,7 @@ static struct regulator_desc regulators[S2MPG10_REGULATOR_MAX] = {
 static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 				       struct s2mpg10_platform_data *pdata)
 {
-	struct device_node *pmic_np;
-	struct device_node *regulators_np __free(device_node) = NULL;
+	struct device_node *pmic_np, *regulators_np, *reg_np;
 	struct s2mpg10_regulator_data *rdata;
 	unsigned int i;
 	int ret;
@@ -325,22 +324,25 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 		return -ENODEV;
 	}
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(pmic_np);
 	regulators_np = of_find_node_by_name(pmic_np, "regulators");
 	if (!regulators_np) {
 		dev_err(iodev->dev, "could not find regulators sub-node\n");
 		return -EINVAL;
 	}
 
-	pdata->num_regulators = of_get_child_count(regulators_np);
-	rdata = devm_kcalloc(iodev->dev, pdata->num_regulators, sizeof(*rdata),
+	/* count the number of regulators to be supported in pmic */
+	pdata->num_regulators = 0;
+	for_each_child_of_node(regulators_np, reg_np) {
+		pdata->num_regulators++;
+	}
+
+	rdata = devm_kzalloc(iodev->dev, sizeof(*rdata) * pdata->num_regulators,
 			     GFP_KERNEL);
 	if (!rdata)
 		return -ENOMEM;
 
 	pdata->regulators = rdata;
-	for_each_child_of_node_scoped(regulators_np, reg_np) {
+	for_each_child_of_node(regulators_np, reg_np) {
 		for (i = 0; i < ARRAY_SIZE(regulators); i++)
 			if (!of_node_cmp(reg_np->name, regulators[i].name))
 				break;
@@ -355,16 +357,11 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 		rdata->id = i;
 		rdata->initdata = of_get_regulator_init_data(iodev->dev, reg_np,
 							     &regulators[i]);
-		/*
-		 * We take an extra reference here, as reg_node/reg_np goes out
-		 * of scope otherwise, to later pass the node into
-		 * regulator_register() in s2mpg10_pmic_probe().
-		 */
-		rdata->reg_node = of_node_get(reg_np);
+		rdata->reg_node = reg_np;
 		rdata++;
 	}
 
-	if (gpiod_count(iodev->dev, NULL) < 1) {
+	if (of_gpio_count(pmic_np) < 1) {
 		dev_err(iodev->dev, "could not find pmic gpios\n");
 		return -EINVAL;
 	}
@@ -386,10 +383,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	pdata->buck_ocp_ctrl5 = ret ? 0 : val;
 
 	/* parse SMPL_WARN information */
-	pdata->smpl_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 0,
-						    GPIOD_ASIS);
-	if (IS_ERR(pdata->smpl_warn_pin))
-		dev_err(iodev->dev, "failed to get smpl_warn_pin gpio\n");
+	pdata->smpl_warn_pin = of_get_gpio(pmic_np, 0);
+	if (pdata->smpl_warn_pin < 0)
+		dev_err(iodev->dev, "smpl_warn_pin < 0: %d\n",
+			pdata->smpl_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "smpl_warn_vth", &val);
 	pdata->smpl_warn_lvl = ret ? 0 : val;
@@ -401,10 +398,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	pdata->smpl_warn_lbdt = ret ? 0 : val;
 
 	/* parse OCP_WARN information */
-	pdata->b2_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 2,
-						      GPIOD_ASIS);
-	if (IS_ERR(pdata->b2_ocp_warn_pin))
-		dev_err(iodev->dev, "failed to get b2_ocp_warn_pin\n");
+	pdata->b2_ocp_warn_pin = of_get_gpio(pmic_np, 2);
+	if (pdata->b2_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b2_ocp_warn_pin < 0: %d\n",
+			pdata->b2_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b2_ocp_warn_en", &val);
 	pdata->b2_ocp_warn_en = ret ? 0 : val;
@@ -418,10 +415,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	ret = of_property_read_u32(pmic_np, "b2_ocp_warn_lvl", &val);
 	pdata->b2_ocp_warn_lvl = ret ? 0 : val;
 
-	pdata->b3_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 1,
-						      GPIOD_ASIS);
-	if (IS_ERR(pdata->b3_ocp_warn_pin))
-		dev_err(iodev->dev, "failed to get b3_ocp_warn_pin\n");
+	pdata->b3_ocp_warn_pin = of_get_gpio(pmic_np, 1);
+	if (pdata->b3_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b3_ocp_warn_pin < 0: %d\n",
+			pdata->b3_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b3_ocp_warn_en", &val);
 	pdata->b3_ocp_warn_en = ret ? 0 : val;
@@ -438,10 +435,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	ret = of_property_read_u32(pmic_np, "b10_ocp_warn_en", &val);
 	pdata->b10_ocp_warn_en = ret ? 0 : val;
 
-	pdata->b10_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 5,
-						       GPIOD_ASIS);
-	if (IS_ERR(pdata->b10_ocp_warn_pin))
-		dev_err(iodev->dev, "failed to get b10_ocp_warn_pin gpio\n");
+	pdata->b10_ocp_warn_pin = of_get_gpio(pmic_np, 5);
+	if (pdata->b10_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b10_ocp_warn_pin < 0: %d\n",
+			pdata->b10_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b10_ocp_warn_cnt", &val);
 	pdata->b10_ocp_warn_cnt = ret ? 0 : val;
@@ -453,10 +450,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	pdata->b10_ocp_warn_lvl = ret ? 0 : val;
 
 	/* parse SOFT_OCP_WARN information */
-	pdata->b2_soft_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 4,
-							   GPIOD_ASIS);
-	if (IS_ERR(pdata->b2_soft_ocp_warn_pin))
-		dev_err(iodev->dev, "failed to get b2_soft_ocp_warn_pin gpio\n");
+	pdata->b2_soft_ocp_warn_pin = of_get_gpio(pmic_np, 4);
+	if (pdata->b2_soft_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b2_soft_ocp_warn_pin < 0: %d\n",
+			pdata->b2_soft_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b2_soft_ocp_warn_en", &val);
 	pdata->b2_soft_ocp_warn_en = ret ? 0 : val;
@@ -470,10 +467,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	ret = of_property_read_u32(pmic_np, "b2_soft_ocp_warn_lvl", &val);
 	pdata->b2_soft_ocp_warn_lvl = ret ? 0 : val;
 
-	pdata->b3_soft_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 3,
-							   GPIOD_ASIS);
-	if (IS_ERR(pdata->b3_soft_ocp_warn_pin))
-		dev_err(iodev->dev, "failed to get b3_soft_ocp_warn_pin gpio\n");
+	pdata->b3_soft_ocp_warn_pin = of_get_gpio(pmic_np, 3);
+	if (pdata->b3_soft_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b3_soft_ocp_warn_pin < 0: %d\n",
+			pdata->b3_soft_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b3_soft_ocp_warn_en", &val);
 	pdata->b3_soft_ocp_warn_en = ret ? 0 : val;
@@ -487,10 +484,10 @@ static int s2mpg10_pmic_dt_parse_pdata(struct s2mpg10_dev *iodev,
 	ret = of_property_read_u32(pmic_np, "b3_soft_ocp_warn_lvl", &val);
 	pdata->b3_soft_ocp_warn_lvl = ret ? 0 : val;
 
-	pdata->b10_soft_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 6,
-							    GPIOD_ASIS);
-	if (IS_ERR(pdata->b10_soft_ocp_warn_pin))
-		dev_err(iodev->dev, "failed to get b10_soft_ocp_warn_pin gpio\n");
+	pdata->b10_soft_ocp_warn_pin = of_get_gpio(pmic_np, 6);
+	if (pdata->b10_soft_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b10_soft_ocp_warn_pin < 0: %d\n",
+			pdata->b10_soft_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b10_soft_ocp_warn_en", &val);
 	pdata->b10_soft_ocp_warn_en = ret ? 0 : val;
@@ -837,29 +834,26 @@ static int s2mpg10_pmic_probe(struct platform_device *pdev)
 	int irq_base;
 	int i, ret;
 
+	if (iodev->dev->of_node) {
+		ret = s2mpg10_pmic_dt_parse_pdata(iodev, pdata);
+		if (ret)
+			return ret;
+	}
+
 	if (!pdata) {
 		dev_err(pdev->dev.parent, "Platform data not supplied\n");
 		return -ENODEV;
 	}
 
-	if (iodev->dev->of_node) {
-		ret = s2mpg10_pmic_dt_parse_pdata(iodev, pdata);
-		if (ret)
-			goto out_release_of_nodes;
-	}
-
 	s2mpg10 = devm_kzalloc(&pdev->dev, sizeof(struct s2mpg10_pmic),
 			       GFP_KERNEL);
-	if (!s2mpg10) {
-		ret = -ENOMEM;
-		goto out_release_of_nodes;
-	}
+	if (!s2mpg10)
+		return -ENOMEM;
 
 	irq_base = pdata->irq_base;
 	if (!irq_base) {
 		dev_err(&pdev->dev, "Failed to get irq base %d\n", irq_base);
-		ret = -ENODEV;
-		goto out_release_of_nodes;
+		return -ENODEV;
 	}
 
 	s2mpg10->rdev = devm_kzalloc(&pdev->dev,
@@ -897,18 +891,11 @@ static int s2mpg10_pmic_probe(struct platform_device *pdev)
 
 		s2mpg10->rdev[i] = devm_regulator_register(&pdev->dev,
 							   &regulators[id], &config);
-		/*
-		 * regulator_register() bumps the reference count, so now it's
-		 * safe to drop the extra reference again which we took in
-		 * s2mpg10_pmic_dt_parse_pdata().
-		 */
-		of_node_put(pdata->regulators[i].reg_node);
-		pdata->regulators[i].reg_node = NULL;
 		if (IS_ERR(s2mpg10->rdev[i])) {
 			ret = PTR_ERR(s2mpg10->rdev[i]);
 			dev_err(&pdev->dev, "regulator init failed for %d\n",
 				i);
-			goto out_release_of_nodes;
+			return ret;
 		}
 
 		if (s2m_is_enabled(s2mpg10->rdev[i]))
@@ -952,21 +939,16 @@ static int s2mpg10_pmic_probe(struct platform_device *pdev)
 			   DCTRLSEL_AP_ACTIVE_N << 4, GENMASK(7, 4));
 
 	return 0;
-
-out_release_of_nodes:
-	for (i = 0; i < pdata->num_regulators; ++i)
-		of_node_put(pdata->regulators[i].reg_node);
-
-	return ret;
 }
 
-static void s2mpg10_pmic_remove(struct platform_device *pdev)
+static int s2mpg10_pmic_remove(struct platform_device *pdev)
 {
 #if IS_ENABLED(CONFIG_DRV_SAMSUNG_PMIC)
 	struct s2mpg10_pmic *s2mpg10 = platform_get_drvdata(pdev);
 
 	pmic_device_destroy(s2mpg10->dev->devt);
 #endif
+	return 0;
 }
 
 static void s2mpg10_sync_state(struct s2mpg10_pmic *s2mpg10)

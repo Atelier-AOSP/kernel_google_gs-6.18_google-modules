@@ -12,6 +12,9 @@
 #elif defined(CONFIG_SOC_GS201)
 #include <dt-bindings/clock/gs201.h>
 #include <dt-bindings/soc/google/gs201-devfreq.h>
+#elif defined(CONFIG_SOC_ZUMA)
+#include <dt-bindings/clock/zuma.h>
+#include <dt-bindings/soc/google/zuma-devfreq.h>
 #endif
 
 enum tz_id {
@@ -48,6 +51,10 @@ enum acpm_dvfs_test_commands {
 	ACPM_DVFS_TEST_CPUCL0,
 	ACPM_DVFS_TEST_CPUCL1,
 	ACPM_DVFS_TEST_CPUCL2,
+#if defined(CONFIG_SOC_ZUMA)
+	ACPM_DVFS_TEST_DSU,
+	ACPM_DVFS_TEST_BCI,
+#endif
 	ACPM_DVFS_TEST_G3D,
 	ACPM_DVFS_TEST_G3DL2,
 	ACPM_DVFS_TEST_TPU,
@@ -64,6 +71,10 @@ enum domains {
 	DVFS_CPUCL0,
 	DVFS_CPUCL1,
 	DVFS_CPUCL2,
+#if defined(CONFIG_SOC_ZUMA)
+	DVFS_DSU,
+	DVFS_BCI,
+#endif
 	DVFS_G3D,		/*not support */
 	DVFS_G3DL2,		/*not support */
 	DVFS_TPU,		/*not support */
@@ -188,6 +199,37 @@ enum GS201_S2MPG12_RTC_REG {
 	RTC_REG_A1YEAR = 0x1A,
 	RTC_REG_OSCCTRL = 0x1B,
 };
+#elif defined(CONFIG_SOC_ZUMA)
+enum ZUMA_S2MPG14_RTC_REG {
+	RTC_REG_CTRL = 0x0,
+	RTC_REG_UPDATE = 0x1,
+	RTC_REG_SMPL = 0x2,
+	RTC_REG_WTSR = 0x3,
+	RTC_REG_CAPSEL = 0x4,
+	RTC_REG_MSEC = 0x5,
+	RTC_REG_SEC = 0x6,
+	RTC_REG_MIN = 0x7,
+	RTC_REG_HOUR = 0x8,
+	RTC_REG_WEEK = 0x9,
+	RTC_REG_DAY = 0xA,
+	RTC_REG_MON = 0xB,
+	RTC_REG_YEAR = 0xC,
+	RTC_REG_A0SEC = 0xD,
+	RTC_REG_A0MIN = 0xE,
+	RTC_REG_A0HOUR = 0xF,
+	RTC_REG_A0WEEK = 0x10,
+	RTC_REG_A0DAY = 0x11,
+	RTC_REG_A0MON = 0x12,
+	RTC_REG_A0YEAR = 0x13,
+	RTC_REG_A1SEC = 0x14,
+	RTC_REG_A1MIN = 0x15,
+	RTC_REG_A1HOUR = 0x16,
+	RTC_REG_A1WEEK = 0x17,
+	RTC_REG_A1DAY = 0x18,
+	RTC_REG_A1MON = 0x19,
+	RTC_REG_A1YEAR = 0x1A,
+	RTC_REG_OSC_CTRL = 0x1B,
+};
 #endif
 
 #define NUM_OF_WQ               16
@@ -227,6 +269,7 @@ struct acpm_dvfs_validity {
 	unsigned int upper_bound;
 	unsigned int lower_bound;
 	bool is_given_range;
+	bool is_steep_jump;
 };
 
 #define PMIC_RANDOM_ADDR_RANGE  0x1FF
@@ -246,6 +289,9 @@ struct acpm_mfd_validity {
 #elif defined(CONFIG_SOC_GS201)
 	struct s2mpg12_dev *s2mpg_main;
 	struct s2mpg13_dev *s2mpg_sub;
+#elif defined(CONFIG_SOC_ZUMA)
+	struct s2mpg14_dev *s2mpg_main;
+	struct s2mpg15_dev *s2mpg_sub;
 #endif
 	struct i2c_client *main_pmic;
 	struct i2c_client *sub_pmic;
@@ -277,18 +323,6 @@ struct acpm_mfd_validity {
 #define SLC_PT_INFO		0xd009
 
 #define PT_PTID_MAX 64
-
-struct pt_handle {		/* one per client */
-	struct mutex mt;	/* serialize write access to the handle */
-	struct list_head list;
-	pt_resize_callback_t resize_callback;
-	int id_cnt;
-	struct pt_pts *pts;	/* client partitions */
-	struct device_node *node;	/* client node */
-	struct ctl_table *sysctl_table;
-	struct ctl_table_header *sysctl_header;
-	void *data;		/* client private data */
-};
 
 struct acpm_slc_validity {
 	struct delayed_work slc_request_wk[NUM_OF_WQ];
@@ -373,6 +407,20 @@ static struct acpm_dvfs_domains dvfs_dm_list[] = {
 			 .devfreq_id = -1,
 			 .cpu_policy_id = CPUCL2_POLICY,
 			  },
+#if defined(CONFIG_SOC_ZUMA)
+	[DVFS_DSU] = {
+			 .name = "DSU",
+			 .cal_id = ACPM_DVFS_DSU,
+			 .devfreq_id = DEVFREQ_DSU,
+			 .cpu_policy_id = -1,
+			  },
+	[DVFS_BCI] = {
+			 .name = "BCI",
+			 .cal_id = ACPM_DVFS_BCI,
+			 .devfreq_id = DEVFREQ_BCI,
+			 .cpu_policy_id = -1,
+			  },
+#endif
 	[DVFS_G3D] = {
 		      .name = "G3D",
 		      .cal_id = ACPM_DVFS_G3D,
@@ -419,6 +467,7 @@ struct acpm_dvfs_dm {
 	unsigned int total_cycle_cnt;
 	unsigned int devfreq_id;
 	unsigned int cpu_policy_id;
+	unsigned int prev_jump_idx;
 	struct dvfs_frequency_table *table;
 	struct acpm_dvfs_test_stats *stats;
 	struct stats_scale *scales;
@@ -470,6 +519,8 @@ union tmu_ipc_message {
 	struct tmu_ipc_response resp;
 };
 
+extern u32 gs_chipid_get_type(void);
+extern u32 gs_chipid_get_revision(void);
 static int acpm_dvfs_set_cpufreq(unsigned int dm_id, unsigned int rate,
 				 int cycle);
 static int acpm_dvfs_set_devfreq(unsigned int dm_id, unsigned int rate,

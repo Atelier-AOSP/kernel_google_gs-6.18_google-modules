@@ -42,6 +42,7 @@ static void adv_tracer_ipc_sscd_release(struct device *dev)
 static struct sscd_platform_data sscd_pdata;
 static struct platform_device sscd_dev = {
 	.name            = DEVICE_NAME,
+	.driver_override = SSCD_NAME,
 	.id              = -1,
 	.dev             = {
 		.platform_data = &sscd_pdata,
@@ -519,6 +520,8 @@ static int adv_tracer_ipc_init(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	int ret = 0;
+	struct cpumask aff_mask;
+	const char *buf;
 
 	eat_ipc = devm_kzalloc(&pdev->dev,
 			sizeof(struct adv_tracer_ipc_main), GFP_KERNEL);
@@ -543,6 +546,15 @@ static int adv_tracer_ipc_init(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to register interrupt: %d\n", ret);
 		return ret;
 	}
+	ret = of_property_read_string(node, "irq_affinity", &buf);
+	if (!ret) {
+		cpulist_parse(buf, &aff_mask);
+		ret = irq_set_affinity_hint(eat_ipc->irq, &aff_mask);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to set interrupt affinity: %d\n", ret);
+			return ret;
+		}
+	}
 	eat_ipc->dev = &pdev->dev;
 
 	ret = adv_tracer_ipc_channel_probe();
@@ -562,7 +574,6 @@ static int adv_tracer_ipc_init(struct platform_device *pdev)
 		eat_ipc->intr_bitoffset = INTR_FLAG_OFFSET;
 
 #ifdef ADV_TRACER_SSCOREDUMP
-	device_set_driver_override(&sscd_dev.dev, SSCD_NAME);
 	platform_device_register(&sscd_dev);
 #endif
 
@@ -593,6 +604,7 @@ static const struct of_device_id eat_match[] = {
 	{ .compatible = "google,exynos-adv-tracer" },
 	{},
 };
+MODULE_DEVICE_TABLE(of, eat_match);
 
 static struct platform_driver eat_info_driver = {
 	.probe	= adv_tracer_probe,

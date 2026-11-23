@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef EXYNOS_EHLD__H
 #define EXYNOS_EHLD__H
 
 #define NUM_TRACE			(8)
+#define NUM_TRACE_SKIP			(4)
 
 #define EHLD_STAT_NORMAL		(0x0)
 #define EHLD_STAT_LOCKUP_WARN		(0x1)
@@ -36,6 +37,7 @@ u32 adv_tracer_ehld_get_interval(void);
 int adv_tracer_ehld_get_enable(void);
 int adv_tracer_ehld_init(void *data);
 int adv_tracer_ehld_remove(void);
+int adv_tracer_ehld_set_pmu_cntr_id(int cpu, int en, int cntr_id);
 #else
 #define exynos_ehld_event_raw_update(a, b)		do { } while (0)
 #define exynos_ehld_event_raw_dump(a, b)		do { } while (0)
@@ -80,6 +82,10 @@ inline int adv_tracer_ehld_init(void *data)
 	return -1;
 }
 inline int adv_tracer_ehld_remove(void)
+{
+	return -1;
+}
+inline int adv_tracer_ehld_set_pmu_cntr_id(int cpu, int en, int cntr_id)
 {
 	return -1;
 }

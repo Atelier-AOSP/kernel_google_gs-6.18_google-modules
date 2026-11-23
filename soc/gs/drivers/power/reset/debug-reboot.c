@@ -165,7 +165,7 @@ static void __exit debug_reboot_exit(void)
 {
 	unregister_reboot_notifier(&debug_reboot_nb);
 
-	timer_delete_sync(&reboot_timer);
+	del_timer_sync(&reboot_timer);
 }
 
 module_init(debug_reboot_init);

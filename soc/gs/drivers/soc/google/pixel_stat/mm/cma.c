@@ -10,6 +10,7 @@
 #include <linux/cma.h>
 #include <linux/kobject.h>
 #include <linux/slab.h>
+#include "../../vh/include/sched.h"
 
 #define DEF_LATENCY_MID_BOUND_MS 1500
 #define DEF_LATENCY_LOW_BOUND_MS 500
@@ -25,15 +26,11 @@ struct cma_pixel_stat {
 	spinlock_t lock;
 	unsigned long latency[LATENCY_NUM_LEVELS];
 	unsigned long bound[LATENCY_NUM_LEVELS];
-	unsigned long alloc_pages_attempts;
-	unsigned long fail_pages;
-	unsigned long alloc_pages_failfast_attempts; /* GFP_NORERY */
-	unsigned long fail_failfast_pages; /* GFP_NORETRY */
 	struct kobject kobj;
 };
 
 struct cma_index {
-	struct cma *target;
+	const char *name;
 	int no;
 };
 
@@ -47,9 +44,13 @@ static struct cma_pixel_stat *stats[MAX_CMA_AREAS];
  * original functions.
  */
 
-void vh_cma_alloc_start(void *data, s64 *ts)
+void vh_cma_alloc_start(void *data, const char *name, unsigned long count,
+			unsigned int align)
 {
-	*ts = ktime_to_ms(ktime_get());
+	struct vendor_task_struct *tsk;
+
+	tsk = get_vendor_task_struct(current);
+	set_vendor_task_struct_private(tsk, jiffies);
 }
 
 struct cma *cma;
@@ -58,26 +59,33 @@ static int parse_cma_idx(struct cma *cma, void *data)
 {
 	struct cma_index *arg = data;
 
-	if (cma != arg->target) {
-		arg->no++;
-		return 0;
+	if (arg->name &&
+	    !strncmp(cma_get_name(cma), arg->name, strlen(arg->name))) {
+		/* bail out the loop from cma_for_each_area */
+		return 1;
 	}
 
-	/* bail out the loop from cma_for_each_area */
-	return 1;
+	arg->no++;
+	return 0;
 }
 
-void vh_cma_alloc_finish(void *data, struct cma *cma, struct page *page,
-			 unsigned long count, unsigned int align,
-			 gfp_t gfp_mask, s64 ts)
+void vh_cma_alloc_finish(void *data, const char *name, unsigned long pfn,
+			 const struct page *page, unsigned long count,
+			 unsigned int align)
 {
 	struct cma_pixel_stat *cma_stat;
 	struct cma_index index = {
-		.target = cma,
+		.name = name,
 	};
 
-	s64 delta = ktime_to_ms(ktime_get()) - ts;
+	s64 delta;
+	struct vendor_task_struct *tsk;
+	unsigned long old_ts;
 
+	tsk = get_vendor_task_struct(current);
+	old_ts = get_and_reset_vendor_task_struct_private(tsk);
+
+	delta = jiffies_to_msecs(jiffies - old_ts);
 	WARN_ON_ONCE(delta < 0);
 
 	cma_for_each_area(parse_cma_idx, &index);
@@ -90,18 +98,6 @@ void vh_cma_alloc_finish(void *data, struct cma *cma, struct page *page,
 		cma_stat->latency[LATENCY_MID]++;
 	else
 		cma_stat->latency[LATENCY_HIGH]++;
-
-	if (page) {
-		if (gfp_mask & __GFP_NORETRY)
-			cma_stat->alloc_pages_failfast_attempts += count;
-		else
-			cma_stat->alloc_pages_attempts += count;
-	} else {
-		if (gfp_mask & __GFP_NORETRY)
-			cma_stat->fail_failfast_pages += count;
-		else
-			cma_stat->fail_pages += count;
-	}
 	spin_unlock(&cma_stat->lock);
 }
 
@@ -201,56 +197,12 @@ static ssize_t latency_mid_bound_store(struct kobject *kobj,
 }
 CMA_ATTR_RW(latency_mid_bound);
 
-static ssize_t alloc_pages_attempts_show(struct kobject *kobj,
-				 struct kobj_attribute *attr, char *buf)
-{
-	struct cma_pixel_stat *cma_stat =
-		container_of(kobj, struct cma_pixel_stat, kobj);
-
-	return sysfs_emit(buf, "%lu\n", cma_stat->alloc_pages_attempts);
-}
-CMA_ATTR_RO(alloc_pages_attempts);
-
-static ssize_t alloc_pages_failfast_attempts_show(struct kobject *kobj,
-				 struct kobj_attribute *attr, char *buf)
-{
-	struct cma_pixel_stat *cma_stat =
-		container_of(kobj, struct cma_pixel_stat, kobj);
-
-	return sysfs_emit(buf, "%lu\n", cma_stat->alloc_pages_failfast_attempts);
-}
-CMA_ATTR_RO(alloc_pages_failfast_attempts);
-
-static ssize_t fail_pages_show(struct kobject *kobj,
-				 struct kobj_attribute *attr, char *buf)
-{
-	struct cma_pixel_stat *cma_stat =
-		container_of(kobj, struct cma_pixel_stat, kobj);
-
-	return sysfs_emit(buf, "%lu\n", cma_stat->fail_pages);
-}
-CMA_ATTR_RO(fail_pages);
-
-static ssize_t fail_failfast_pages_show(struct kobject *kobj,
-				 struct kobj_attribute *attr, char *buf)
-{
-	struct cma_pixel_stat *cma_stat =
-		container_of(kobj, struct cma_pixel_stat, kobj);
-
-	return sysfs_emit(buf, "%lu\n", cma_stat->fail_failfast_pages);
-}
-CMA_ATTR_RO(fail_failfast_pages);
-
 static struct attribute *cma_attrs[] = {
 	&latency_low_attr.attr,
 	&latency_mid_attr.attr,
 	&latency_high_attr.attr,
 	&latency_mid_bound_attr.attr,
 	&latency_low_bound_attr.attr,
-	&alloc_pages_attempts_attr.attr,
-	&alloc_pages_failfast_attempts_attr.attr,
-	&fail_pages_attr.attr,
-	&fail_failfast_pages_attr.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(cma);

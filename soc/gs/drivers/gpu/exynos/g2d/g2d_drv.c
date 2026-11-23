@@ -64,7 +64,7 @@ static int g2d_update_priority(struct g2d_context *ctx, enum g2d_priority priori
 
 void g2d_hw_timeout_handler(struct timer_list *arg)
 {
-	struct g2d_task *task = timer_container_of(task, arg, hw_timer);
+	struct g2d_task *task = from_timer(task, arg, hw_timer);
 	struct g2d_device *g2d_dev = task->g2d_dev;
 	unsigned long flags;
 	u32 state;
@@ -175,17 +175,16 @@ static irqreturn_t g2d_irq_handler(int irq, void *priv)
 	return IRQ_HANDLED;
 }
 
-static int g2d_fault_handler(struct iommu_domain *domain, struct device *dev,
-			     unsigned long iova, int flags, void *token)
+static int g2d_fault_handler(struct iommu_fault *fault, void *data)
 {
-	struct g2d_device *g2d_dev = token;
+	struct g2d_device *g2d_dev = data;
 	struct g2d_task *task;
 	int job_id = g2d_hw_get_current_task(g2d_dev);
-	unsigned long irqflags;
+	unsigned long flags;
 
-	spin_lock_irqsave(&g2d_dev->lock_task, irqflags);
+	spin_lock_irqsave(&g2d_dev->lock_task, flags);
 	task = g2d_get_active_task_from_id(g2d_dev, job_id);
-	spin_unlock_irqrestore(&g2d_dev->lock_task, irqflags);
+	spin_unlock_irqrestore(&g2d_dev->lock_task, flags);
 
 	g2d_dump_info(g2d_dev, task);
 
@@ -701,22 +700,22 @@ struct g2d_device_data {
 	unsigned short fmts_dst;
 };
 
-static const struct g2d_device_data g2d_9610_data = {
+const struct g2d_device_data g2d_9610_data = {
 	.max_layers = G2D_MAX_IMAGES_HALF,
 };
 
-static const struct g2d_device_data g2d_9810_data = {
+const struct g2d_device_data g2d_9810_data = {
 	.caps = G2D_DEVICE_CAPS_HDR10,
 	.max_layers = G2D_MAX_IMAGES,
 };
 
-static const struct g2d_device_data g2d_9820_data = {
+const struct g2d_device_data g2d_9820_data = {
 	.caps = G2D_DEVICE_CAPS_SELF_PROTECTION | G2D_DEVICE_CAPS_YUV_BITDEPTH |
 		G2D_DEVICE_CAPS_HWFC | G2D_DEVICE_CAPS_HDR10,
 	.max_layers = G2D_MAX_IMAGES,
 };
 
-static const struct g2d_device_data g2d_gs101_data = {
+const struct g2d_device_data g2d_gs101_data = {
 	.caps = G2D_DEVICE_CAPS_SELF_PROTECTION | G2D_DEVICE_CAPS_YUV_BITDEPTH |
 		G2D_DEVICE_CAPS_SBWC | G2D_DEVICE_CAPS_AFBC_V12 |
 		G2D_DEVICE_CAPS_POLYFILTER | G2D_DEVICE_CAPS_HDR10PLUS,
@@ -754,6 +753,25 @@ static const struct g2d_device_data g2d_gs201_data = {
 		    BIT(G2D_FMT_IDX_1010102),
 };
 
+const struct g2d_device_data g2d_zuma_data = {
+	.caps = G2D_DEVICE_CAPS_SELF_PROTECTION | G2D_DEVICE_CAPS_YUV_BITDEPTH |
+		G2D_DEVICE_CAPS_SBWC | G2D_DEVICE_CAPS_AFBC_V12 |
+		G2D_DEVICE_CAPS_POLYFILTER | G2D_DEVICE_CAPS_HDR10PLUS | G2D_DEVICE_CAPS_SBWC_LOSSY,
+	.max_layers = G2D_MAX_LAYERS,
+	.fmts_src = BIT(G2D_FMT_IDX_8888) | BIT(G2D_FMT_IDX_565) |
+		    BIT(G2D_FMT_IDX_4444) | BIT(G2D_FMT_IDX_888) |
+		    BIT(G2D_FMT_IDX_1555) | BIT(G2D_FMT_IDX_5551) |
+		    BIT(G2D_FMT_IDX_YUV420SP) | BIT(G2D_FMT_IDX_YUV420P) |
+		    BIT(G2D_FMT_IDX_YUV422SP) | BIT(G2D_FMT_IDX_2101010) |
+		    BIT(G2D_FMT_IDX_1010102),
+	.fmts_dst = BIT(G2D_FMT_IDX_8888) | BIT(G2D_FMT_IDX_565) |
+		    BIT(G2D_FMT_IDX_4444) | BIT(G2D_FMT_IDX_888) |
+		    BIT(G2D_FMT_IDX_1555) | BIT(G2D_FMT_IDX_5551) |
+		    BIT(G2D_FMT_IDX_YUV420SP) | BIT(G2D_FMT_IDX_YUV420P) |
+		    BIT(G2D_FMT_IDX_YUV422SP) | BIT(G2D_FMT_IDX_2101010) |
+		    BIT(G2D_FMT_IDX_1010102),
+};
+
 static const struct of_device_id of_g2d_match[] __refconst = {
 	{
 		.compatible = "samsung,exynos9810-g2d",
@@ -770,14 +788,17 @@ static const struct of_device_id of_g2d_match[] __refconst = {
 	}, {
 		.compatible = "samsung,gs201-g2d",
 		.data = &g2d_gs201_data,
+	}, {
+		.compatible = "samsung,zuma-g2d",
+		.data = &g2d_zuma_data,
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, of_g2d_match);
 
 static int g2d_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *of_id;
-	struct iommu_domain *domain;
 	struct g2d_device *g2d_dev;
 	struct resource *res;
 	__u32 version;
@@ -821,10 +842,10 @@ static int g2d_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	domain = iommu_get_domain_for_dev(&pdev->dev);
-	if (domain)
-		/* Used just for logging. */
-		iommu_set_fault_handler(domain, g2d_fault_handler, g2d_dev);
+	/* it is okay if fault handler is not registered since it is just for debugging */
+	ret = iommu_register_device_fault_handler(&pdev->dev, g2d_fault_handler, g2d_dev);
+	if (ret)
+		perrdev(g2d_dev, "Failed to register IOMMU fault handler (%d)", ret);
 
 	ret = g2d_parse_dt(g2d_dev);
 	if (ret < 0)
@@ -928,6 +949,8 @@ err_misc:
 err:
 	pm_runtime_disable(&pdev->dev);
 err_dt:
+	iommu_unregister_device_fault_handler(&pdev->dev);
+
 	perrdev(g2d_dev, "Failed to probe FIMG2D");
 
 	return ret;
@@ -945,7 +968,7 @@ static void g2d_shutdown(struct platform_device *pdev)
 	g2d_stamp_task(NULL, G2D_STAMP_STATE_SHUTDOWN, 1);
 }
 
-static void g2d_remove(struct platform_device *pdev)
+static int g2d_remove(struct platform_device *pdev)
 {
 	struct g2d_device *g2d_dev = platform_get_drvdata(pdev);
 
@@ -959,6 +982,8 @@ static void g2d_remove(struct platform_device *pdev)
 	misc_deregister(&g2d_dev->misc[1]);
 
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1005,4 +1030,4 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Cho KyongHo <pullip.cho@samsung.com>");
 MODULE_AUTHOR("Hyesoo Yu <hyesoo.yu@samsung.com>");
 MODULE_DESCRIPTION("Exynos FIMG2D device driver");
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);

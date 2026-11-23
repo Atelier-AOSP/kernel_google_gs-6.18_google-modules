@@ -13,7 +13,6 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/slg51002.h>
 #include <linux/of_gpio.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/regmap.h>
 
 #define SLG51002_CHIP_ID_LEN            3
@@ -584,7 +583,8 @@ static const struct regmap_config slg51002_regmap_config = {
 	.reg_write = slg51002_reg_write,
 };
 
-static int slg51002_i2c_probe(struct i2c_client *client)
+static int slg51002_i2c_probe(struct i2c_client *client,
+			      const struct i2c_device_id *id)
 {
 	struct slg51002_dev *slg51002;
 	int gpio, ret;
@@ -636,6 +636,11 @@ static int slg51002_i2c_probe(struct i2c_client *client)
 
 		slg51002->chip_bb_pin = gpio;
 		usleep_range(2000, 2020);
+	} else if (of_property_read_bool(client->dev.of_node, "dlg,bb-gpios")) {
+		/* retry probe if property exist */
+		return gpio;
+	} else {
+		slg51002->chip_bb_pin = -1;
 	}
 
 	/* optional property */
@@ -653,6 +658,11 @@ static int slg51002_i2c_probe(struct i2c_client *client)
 
 		slg51002->chip_buck_pin = gpio;
 		usleep_range(2000, 2020);
+	} else if (of_property_read_bool(client->dev.of_node, "dlg,buck-gpios")) {
+		/* retry probe if property exist */
+		return gpio;
+	} else {
+		slg51002->chip_buck_pin = -1;
 	}
 
 	/* mandatory property. It wakes the chip from low-power reset state */
@@ -736,6 +746,8 @@ static int slg51002_i2c_probe(struct i2c_client *client)
 
 		slg51002->chip_pu_pin = gpio;
 		usleep_range(1000, 1020);
+	} else {
+		slg51002->chip_pu_pin = -1;
 	}
 
 	slg51002_clear_fault_log(slg51002);
@@ -751,7 +763,7 @@ static int slg51002_i2c_probe(struct i2c_client *client)
 
 out:
 	mutex_destroy(&slg51002->pwr_lock);
-	timer_delete_sync(&slg51002->timer);
+	del_timer_sync(&slg51002->timer);
 	return ret;
 }
 
@@ -759,37 +771,33 @@ static void slg51002_i2c_remove(struct i2c_client *client)
 {
 	struct slg51002_dev *slg51002 = i2c_get_clientdata(client);
 	struct gpio_desc *desc;
-	int ret = 0;
 
 	mfd_remove_devices(slg51002->dev);
 	mutex_destroy(&slg51002->pwr_lock);
-	timer_delete_sync(&slg51002->timer);
+	del_timer_sync(&slg51002->timer);
 
 	if (gpio_is_valid(slg51002->chip_pu_pin)) {
 		desc = gpio_to_desc(slg51002->chip_pu_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		usleep_range(1000, 1020);
 	}
 	if (gpio_is_valid(slg51002->chip_cs_pin)) {
 		desc = gpio_to_desc(slg51002->chip_cs_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		/* Put SLG51002 back to Reset state */
 		usleep_range(SLEEP_10000_USEC,
 				SLEEP_10000_USEC + SLEEP_RANGE_USEC);
 	}
 	if (gpio_is_valid(slg51002->chip_buck_pin)) {
 		desc = gpio_to_desc(slg51002->chip_buck_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		usleep_range(1000, 1020);
 	}
 	if (gpio_is_valid(slg51002->chip_bb_pin)) {
 		desc = gpio_to_desc(slg51002->chip_bb_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		usleep_range(1000, 1020);
 	}
-
-	if (ret)
-		pr_err("Failed to update the gpiod direction on remove\n");
 }
 
 static const struct i2c_device_id slg51002_i2c_id[] = {

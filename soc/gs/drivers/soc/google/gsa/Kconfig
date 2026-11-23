@@ -5,12 +5,17 @@ config GSA
 	default n
 
 config GSA_PKVM
-	bool "Support pKVM"
+	tristate "Support pKVM"
 	depends on GSA
 	depends on PKVM_S2MPU_V9 || PKVM_S2MPU
 	default n
 
 config GSA_GSC
 	tristate "GSC Proxy"
+	depends on GSA
+	default n
+
+config TZ_PROT
+	tristate "TZ Prot"
 	depends on GSA
 	default n

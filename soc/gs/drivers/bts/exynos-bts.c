@@ -22,7 +22,7 @@
 #include <linux/suspend.h>
 #include <soc/google/cal-if.h>
 #include <dt-bindings/soc/google/gs-bts.h>
-#include <trace/events/clock.h>
+#include <trace/events/power.h>
 #if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
 #include <soc/google/exynos_pm_qos.h>
 #else
@@ -54,28 +54,6 @@ static struct pm_qos_request exynos_int_qos;
 
 static struct bts_device *btsdev;
 
-/**
- * @BTS_HIST_BIN: Number of bins of the histogram.
- * @bw_trip:      The trip points for each histogram bin.
- *
- * The trip points are based on log-scale and in the unit
- * of KB/s.
- */
-static const unsigned int bw_trip[BTS_HIST_BIN - 1] = {
-	10000,
-	17800,
-	31600,
-	56200,
-	100000,
-	178000,
-	316000,
-	562000,
-	1000000,
-	1780000,
-	3160000,
-	5620000,
-};
-
 static unsigned int bus1_to_int_freq(unsigned int freq)
 {
 	unsigned int i;
@@ -84,15 +62,94 @@ static unsigned int bus1_to_int_freq(unsigned int freq)
 		dev_err(btsdev->dev, "bus1_int_tbl unavailable\n");
 		return freq;
 	}
+
 	/* The bus1_int_tbl stores frequencies from high to low */
-	for (i = 0; i < btsdev->map_row_cnt; i++) {
-		if (freq > btsdev->bus1_int_tbl[i].bus1_freq)
+	i = btsdev->map_row_cnt;
+	while (--i > 0) {
+		if (freq <= btsdev->bus1_int_tbl[i].bus1_freq)
 			break;
 	}
-	i = i ? i - 1 : i;
 
 	return btsdev->bus1_int_tbl[i].int_freq;
 }
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+static inline unsigned int bus1_freq_to_mhz(unsigned int freq)
+{
+	unsigned int i;
+
+	if (!btsdev->bus1_int_tbl) {
+		dev_err(btsdev->dev, "bus1_int_tbl unavailable\n");
+		return freq;
+	}
+
+	i = btsdev->map_row_cnt;
+	while (--i > 0) {
+		if (freq <= btsdev->bus1_int_tbl[i].bus1_freq)
+			break;
+	}
+
+	return btsdev->bus1_int_tbl[i].bus1_freq / 1000;
+}
+
+static unsigned int bts_cal_urgent_lat_threshold(unsigned int bus1_mhz, unsigned int latency_ns)
+{
+	return latency_ns * bus1_mhz / URGENT_TIMEOUT_EPOCH / 1000;
+}
+
+static void bts_update_urgent_lat_req(unsigned int bus1_freq)
+{
+	struct bts_info *info = btsdev->bts_list;
+	struct bts_urgent_lat *urgent_lat = btsdev->urgent_lat_list;
+	unsigned int i, scen, threshold, bts_index;
+	struct bts_stat stat;
+	char trace_name[32];
+
+	if (!bus1_freq || !btsdev->num_urgent_lat)
+		return;
+
+	bus1_freq = bus1_freq_to_mhz(bus1_freq);
+
+	spin_lock(&btsdev->lock);
+
+	scen = btsdev->top_scen;
+	for (i = 0; i < btsdev->num_urgent_lat; i++) {
+		if (urgent_lat[i].lat_read) {
+			bts_index = urgent_lat[i].bts_index;
+			if (!info[bts_index].pd_on || !info[bts_index].ops->get_urgent ||
+			    !info[bts_index].ops->set_urgent)
+				continue;
+			threshold = bts_cal_urgent_lat_threshold(bus1_freq, urgent_lat[i].lat_read);
+			if (!info[bts_index].stat[scen].stat_on)
+				scen = ID_DEFAULT;
+			if (threshold > info[bts_index].stat[scen].qurgent_th_r || !threshold)
+				threshold = info[bts_index].stat[scen].qurgent_th_r;
+			if (threshold == urgent_lat[i].th_read)
+				continue;
+
+			urgent_lat[i].th_read = threshold;
+			BTSDBG_LOG(btsdev->dev,
+				   "Update %s latency: bus1 %uMhz, lat %u ns, th 0x%x\n",
+				   urgent_lat[i].name, bus1_freq, urgent_lat[i].lat_read,
+				   threshold);
+
+			info[bts_index].ops->get_urgent(info[bts_index].va_base, &stat);
+			if (stat.qurgent_th_r != threshold) {
+				stat.qurgent_th_r = threshold;
+				info[bts_index].ops->set_urgent(info[bts_index].va_base, &stat);
+				if (trace_clock_set_rate_enabled()) {
+					scnprintf(trace_name, sizeof(trace_name), "BTS_%s_ur_th_rd",
+						  urgent_lat[i].name);
+					trace_clock_set_rate(trace_name, threshold,
+							     raw_smp_processor_id());
+				}
+			}
+		}
+	}
+
+	spin_unlock(&btsdev->lock);
+}
+#endif
 
 static void bts_calc_bw(void)
 {
@@ -100,17 +157,25 @@ static void bts_calc_bw(void)
 	unsigned int total_read = 0;
 	unsigned int total_write = 0;
 	unsigned int rt_bw = 0;
-	unsigned int mif_freq, int_freq, bus1_freq;
-
-	mutex_lock(&btsdev->mutex_lock);
+	unsigned int mif_freq, int_freq, bus1_freq = 0;
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	struct bts_bw *bw;
+	unsigned int nocl_total_rd_bw;
+	unsigned int nocl_total_wr_bw;
+	unsigned int nocl_peak_freq;
+	char buf[80];
+	ssize_t ret = 0;
+#endif
 
 	btsdev->peak_bw = 0;
 	btsdev->total_bw = 0;
 
+	spin_lock(&btsdev->lock);
 	for (i = 0; i < btsdev->num_bts; i++) {
+#if !IS_ENABLED(CONFIG_SOC_ZUMA)
 		if (btsdev->peak_bw < btsdev->bts_bw[i].peak)
 			btsdev->peak_bw = btsdev->bts_bw[i].peak;
-
+#endif
 		/* Calculate total RT BW based on RT clients */
 		if (btsdev->bts_bw[i].is_rt)
 			rt_bw += btsdev->bts_bw[i].rt;
@@ -118,7 +183,7 @@ static void bts_calc_bw(void)
 		total_read += btsdev->bts_bw[i].read;
 		total_write += btsdev->bts_bw[i].write;
 	}
-
+	spin_unlock(&btsdev->lock);
 	btsdev->total_bw = total_read + total_write;
 	if (btsdev->peak_bw < (total_read / NUM_CHANNEL))
 		btsdev->peak_bw = (total_read / NUM_CHANNEL);
@@ -129,6 +194,62 @@ static void bts_calc_bw(void)
 	/* Additional MIF constriant to guarantee RT BW < 40% */
 	mif_freq = max(mif_freq, (rt_bw / BUS_WIDTH) * 100 / RT_UTIL);
 
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	for (i = 0; i < btsdev->num_nocl ; i++) {
+		nocl_total_rd_bw = 0;
+		nocl_total_wr_bw = 0;
+		btsdev->nocl_infos[i].peak_freq = 0;
+		list_for_each_entry(bw, &btsdev->nocl_infos[i].list, node) {
+			nocl_total_rd_bw += bw->read;
+			nocl_total_wr_bw += bw->write;
+			nocl_peak_freq = (bw->peak / bw->bus_width) * 100 / INT_UTIL;
+			if (btsdev->nocl_infos[i].peak_freq < nocl_peak_freq)
+				btsdev->nocl_infos[i].peak_freq = nocl_peak_freq;
+		}
+		if (!strcmp(btsdev->nocl_infos[i].nocl_name, "nocl2aa") ||
+		    !strcmp(btsdev->nocl_infos[i].nocl_name, "nocl2ab")) {
+			/* In Zuma, the equivalent of bus1 is NOCL2AA & NOCL2AB
+			 * so first calculate the required frequency for these
+			 * two nocls to get the bus1_freq.
+			 */
+			nocl_peak_freq = (nocl_total_rd_bw / INT_BUS_WIDTH) /
+				NOCL2A_NUM_CHANNEL * 100 / INT_UTIL;
+			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				btsdev->nocl_infos[i].peak_freq);
+			nocl_peak_freq = (nocl_total_wr_bw / INT_BUS_WIDTH) /
+				NOCL2A_NUM_CHANNEL * 100 / INT_UTIL;
+			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				btsdev->nocl_infos[i].peak_freq);
+			bus1_freq = max(bus1_freq, btsdev->nocl_infos[i].peak_freq);
+		} else {
+			/* This block is to calculate the required frequency
+			 * of NOCL1A.
+			 */
+			nocl_peak_freq = (total_read / INT_BUS_WIDTH) /
+				NUM_CHANNEL * 100 / INT_UTIL;
+			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				btsdev->nocl_infos[i].peak_freq);
+			nocl_peak_freq = (total_write / INT_BUS_WIDTH) /
+				NUM_CHANNEL * 100 / INT_UTIL;
+			btsdev->nocl_infos[i].peak_freq = max(nocl_peak_freq,
+				btsdev->nocl_infos[i].peak_freq);
+			int_freq = btsdev->nocl_infos[i].peak_freq;
+		}
+		ret += scnprintf(buf + ret, sizeof(buf) - ret, "%s:%.8u ",
+				 btsdev->nocl_infos[i].nocl_name,
+				 btsdev->nocl_infos[i].peak_freq);
+	}
+	BTSDBG_LOG(btsdev->dev, "Freq: %s\n", buf);
+
+	/* Calculate the final INT frequency based on NOCL2AA, NOCL2AB & NOCL1A */
+	int_freq = max(int_freq, bus1_to_int_freq(bus1_freq));
+	bts_update_urgent_lat_req(bus1_freq);
+
+	BTSDBG_LOG(btsdev->dev,
+		   "BW: T:%.8u R:%.8u W:%.8u P:%.8u RT:%.8u MIF:%.8u NOCL2A:%.8u INT:%.8u\n",
+		   btsdev->total_bw, total_read, total_write, btsdev->peak_bw, rt_bw,
+		   mif_freq, bus1_freq, int_freq);
+#else
 	bus1_freq = (btsdev->peak_bw / BUS_WIDTH) * 100 / INT_UTIL;
 	int_freq = bus1_to_int_freq(bus1_freq);
 
@@ -136,7 +257,7 @@ static void bts_calc_bw(void)
 		   "BW: T:%.8u R:%.8u W:%.8u P:%.8u RT:%.8u MIF:%.8u BUS1:%.8u INT:%.8u\n",
 		   btsdev->total_bw, total_read, total_write, btsdev->peak_bw, rt_bw,
 		   mif_freq, bus1_freq, int_freq);
-
+#endif
 	trace_clock_set_rate("BTS_mif_freq", mif_freq, raw_smp_processor_id());
 	trace_clock_set_rate("BTS_int_freq", int_freq, raw_smp_processor_id());
 
@@ -147,7 +268,6 @@ static void bts_calc_bw(void)
 	pm_qos_update_request(&exynos_mif_qos, mif_freq);
 	pm_qos_update_request(&exynos_int_qos, int_freq);
 #endif
-	mutex_unlock(&btsdev->mutex_lock);
 }
 
 static void bts_update_stats(unsigned int index)
@@ -207,18 +327,45 @@ static void bts_update_stats(unsigned int index)
 static void bts_set(unsigned int scen, unsigned int index)
 {
 	struct bts_info *info = btsdev->bts_list;
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	struct bts_urgent_lat *urgent_lat = btsdev->urgent_lat_list;
+	struct bts_stat bts_stat;
+	unsigned int i, cur_urgent_th_r;
+	bool update_urgent = false;
+#endif
 	int ret;
 
 	if (!info[index].ops->set_bts || !info[index].pd_on)
 		return;
 
 	/* Check scenario set exists */
-	if (info[index].stat[scen].stat_on)
-		ret = info[index].ops->set_bts(info[index].va_base,
-					       &info[index].stat[scen]);
+	if (!info[index].stat[scen].stat_on)
+		scen = ID_DEFAULT;
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	for (i = 0; i < btsdev->num_urgent_lat; i++) {
+		if (urgent_lat[i].bts_index == index) {
+			cur_urgent_th_r = info[index].stat[scen].qurgent_th_r;
+			if (urgent_lat[i].th_read > 0 && urgent_lat[i].th_read < cur_urgent_th_r) {
+				BTSDBG_LOG(btsdev->dev, "Replace %s urgent: th_read 0x%x -> 0x%x\n",
+					   urgent_lat[i].name, cur_urgent_th_r,
+					   urgent_lat[i].th_read);
+				memcpy(&bts_stat, &info[index].stat[scen],
+				       sizeof(info[index].stat[scen]));
+				bts_stat.qurgent_th_r = urgent_lat[i].th_read;
+				update_urgent = true;
+			}
+			break;
+		}
+	}
+
+	if (update_urgent)
+		ret = info[index].ops->set_bts(info[index].va_base, &bts_stat);
 	else
-		ret = info[index].ops->set_bts(info[index].va_base,
-					       &info[index].stat[ID_DEFAULT]);
+		ret = info[index].ops->set_bts(info[index].va_base, &info[index].stat[scen]);
+#else
+	ret = info[index].ops->set_bts(info[index].va_base, &info[index].stat[scen]);
+#endif
 
 	if (ret)
 		dev_err(btsdev->dev,
@@ -281,7 +428,20 @@ int bts_get_bwindex(const char *name)
 		if (!strcmp(bw[index].name, btsdev->rt_names[i]))
 			bw[index].is_rt = true;
 	}
-
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	for (i = 0; i < btsdev->num_nocl; i++) {
+		int j;
+		for (j = 0; j < btsdev->nocl_infos[i].num_ip; j++) {
+			if (!strcmp(bw[index].name,
+			    btsdev->nocl_infos[i].nocl_ips[j].ip_name)) {
+				INIT_LIST_HEAD(&bw[index].node);
+				list_add(&bw[index].node, &btsdev->nocl_infos[i].list);
+				bw[index].bus_width =
+					btsdev->nocl_infos[i].nocl_ips[j].ip_bus_width;
+			}
+		}
+	}
+#endif
 out:
 	spin_unlock(&btsdev->lock);
 	return ret;
@@ -310,6 +470,65 @@ unsigned int bts_get_scenindex(const char *name)
 }
 EXPORT_SYMBOL_GPL(bts_get_scenindex);
 
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+int bts_get_urgent_lat_bts_index(const char *name)
+{
+	unsigned int i, bts_index;
+	struct bts_urgent_lat *urgent_lat = btsdev->urgent_lat_list;
+
+	spin_lock(&btsdev->lock);
+	for (i = 0; i < btsdev->num_urgent_lat; i++) {
+		if (strcmp(name, urgent_lat[i].name) == 0)
+			break;
+	}
+
+	if (i < btsdev->num_urgent_lat) {
+		bts_index = urgent_lat[i].bts_index;
+	} else {
+		bts_index = -EINVAL;
+		dev_err(btsdev->dev, "%s: invalid `%s`", __func__, name);
+	}
+	spin_unlock(&btsdev->lock);
+
+	return bts_index;
+}
+EXPORT_SYMBOL_GPL(bts_get_urgent_lat_bts_index);
+
+void bts_set_urgent_lat_read(int bts_index, unsigned int lat_read)
+{
+	unsigned int i;
+	struct bts_urgent_lat *urgent_lat = btsdev->urgent_lat_list;
+	char trace_name[32];
+
+	if (bts_index < 0 || bts_index >= btsdev->num_bts) {
+		dev_err(btsdev->dev, "%s: Invalid bts index %d!\n", __func__, bts_index);
+		return;
+	}
+
+	spin_lock(&btsdev->lock);
+	for (i = 0; i < btsdev->num_urgent_lat; i++) {
+		if (bts_index == urgent_lat[i].bts_index) {
+			urgent_lat[i].lat_read = lat_read;
+			break;
+		}
+	}
+
+	if (i == btsdev->num_urgent_lat)
+		dev_warn(btsdev->dev, "%s: bts index %d does not upport set urgent lat\n", __func__,
+			 bts_index);
+	else
+		BTSDBG_LOG(btsdev->dev, "%s: lat read %u\n", urgent_lat[i].name, lat_read);
+
+	spin_unlock(&btsdev->lock);
+
+	if (trace_clock_set_rate_enabled() && i != btsdev->num_urgent_lat) {
+		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_ur_lat_rd", urgent_lat[i].name);
+		trace_clock_set_rate(trace_name, lat_read, raw_smp_processor_id());
+	}
+}
+EXPORT_SYMBOL_GPL(bts_set_urgent_lat_read);
+#endif
+
 int bts_update_bw(unsigned int index, struct bts_bw bw)
 {
 	struct bts_bw *bts_bw = btsdev->bts_bw;
@@ -331,13 +550,12 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 		goto err;
 	}
 
-	spin_lock(&btsdev->lock);
+	rt_mutex_lock(&btsdev->mutex_lock);
 	bts_bw[index].peak = bw.peak;
 	bts_bw[index].read = bw.read;
 	bts_bw[index].write = bw.write;
 	if (bts_bw[index].is_rt)
 		bts_bw[index].rt = bw.rt;
-	spin_unlock(&btsdev->lock);
 
 	if(trace_clock_set_rate_enabled()) {
 		scnprintf(trace_name, sizeof(trace_name), "BTS_%s_rd_bw", bts_bw[index].name);
@@ -356,6 +574,7 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 
 	bts_calc_bw();
 	bts_update_stats(index);
+	rt_mutex_unlock(&btsdev->mutex_lock);
 
 	return 0;
 
@@ -510,7 +729,7 @@ static int exynos_bts_bw_open_show(struct seq_file *buf, void *d)
 {
 	int i;
 
-	mutex_lock(&btsdev->mutex_lock);
+	rt_mutex_lock(&btsdev->mutex_lock);
 	for (i = 0; (btsdev->bts_bw[i].name != NULL) &&
 		(i < btsdev->num_bts); i++) {
 		seq_printf(
@@ -520,7 +739,7 @@ static int exynos_bts_bw_open_show(struct seq_file *buf, void *d)
 			btsdev->bts_bw[i].write, btsdev->bts_bw[i].peak,
 			btsdev->bts_bw[i].rt);
 	}
-	mutex_unlock(&btsdev->mutex_lock);
+	rt_mutex_unlock(&btsdev->mutex_lock);
 	return 0;
 }
 
@@ -534,7 +753,7 @@ static int exynos_bts_bw_hist_open_show(struct seq_file *buf, void *d)
 {
 	int i, j;
 
-	mutex_lock(&btsdev->mutex_lock);
+	rt_mutex_lock(&btsdev->mutex_lock);
 	seq_printf(buf, "Total BW, Count:\nkB/s:\t");
 	for (i = 0; i < BTS_HIST_BIN - 1; i++) {
 		seq_printf(
@@ -627,7 +846,7 @@ static int exynos_bts_bw_hist_open_show(struct seq_file *buf, void *d)
 		}
 		seq_printf(buf, "\n");
 	}
-	mutex_unlock(&btsdev->mutex_lock);
+	rt_mutex_unlock(&btsdev->mutex_lock);
 	return 0;
 }
 
@@ -642,7 +861,7 @@ static ssize_t bts_stats_show(struct device *dev, struct device_attribute *attr,
 	int i, j;
 	ssize_t ret = 0;
 
-	mutex_lock(&btsdev->mutex_lock);
+	rt_mutex_lock(&btsdev->mutex_lock);
 	ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Total BW, Time in ms:\nkB/s:\t");
 	for (i = 0; i < BTS_HIST_BIN - 1; i++) {
@@ -699,7 +918,7 @@ static ssize_t bts_stats_show(struct device *dev, struct device_attribute *attr,
 		}
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "\n");
 	}
-	mutex_unlock(&btsdev->mutex_lock);
+	rt_mutex_unlock(&btsdev->mutex_lock);
 	return ret;
 }
 
@@ -1212,8 +1431,8 @@ static int exynos_bts_vc_open(struct inode *inode, struct file *file)
 }
 
 static ssize_t exynos_bts_vc_write(struct file *file,
-				    const char __user *user_buf, size_t count,
-				    loff_t *ppos)
+				   const char __user *user_buf, size_t count,
+				   loff_t *ppos)
 {
 	struct bts_info info;
 	char buf[16];
@@ -1224,6 +1443,7 @@ static ssize_t exynos_bts_vc_write(struct file *file,
 
 	buf_size = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf,
 					  count);
+
 	if (buf_size < 0)
 		return buf_size;
 
@@ -1241,15 +1461,12 @@ static ssize_t exynos_bts_vc_write(struct file *file,
 		return -EINVAL;
 	}
 
-	cnt = 0;
-	for (i = 0; i < btsdev->num_bts; i++) {
+	for (i = 0, cnt = 0; i < btsdev->num_bts && cnt <= vc_num; i++) {
 		info = btsdev->bts_list[i];
 		if (!info.va_base)
 			continue;
 		if (!info.ops->set_vc)
 			continue;
-		if (cnt == vc_num)
-			break;
 		cnt++;
 	}
 
@@ -1343,9 +1560,9 @@ int exynos_bts_debugfs_init(void)
 	if (IS_ERR(den))
 		return -ENOMEM;
 
-	debugfs_create_file("status", 0440, den, NULL,
+	debugfs_create_file("status", 0444, den, NULL,
 			    &debug_bts_hwstatus_fops);
-	debugfs_create_file("scenario", 0440, den, NULL,
+	debugfs_create_file("scenario", 0444, den, NULL,
 			    &debug_bts_scenario_fops);
 	debugfs_create_file("qos", 0440, den, NULL, &debug_bts_qos_fops);
 	debugfs_create_file("mo", 0440, den, NULL, &debug_bts_mo_fops);
@@ -1355,7 +1572,7 @@ int exynos_bts_debugfs_init(void)
 	debugfs_create_file("log", 0440, den, NULL, &debug_bts_log_fops);
 	debugfs_create_file("bw", 0440, den, NULL, &debug_bts_bw_fops);
 	debugfs_create_file("bw_hist", 0440, den, NULL, &debug_bts_bw_hist_fops);
-	debugfs_create_file("vc", 0440, den, NULL, &debug_bts_vc_fops);
+	debugfs_create_file("vc", 0444, den, NULL, &debug_bts_vc_fops);
 
 	return 0;
 }
@@ -1479,16 +1696,65 @@ static int bts_parse_setting(struct device_node *np, struct bts_stat *stat)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+static int bts_parse_nocl_data_index(struct device_node *np, struct bts_device *data,
+				     int index, const char *nocl_name)
+{
+	struct device_node *child_np, *nocl_np = NULL;
+	int i = 0;
+
+	if (!np)
+		return -ENODEV;
+
+	nocl_np = of_get_child_by_name(np, nocl_name);
+	if (!nocl_np)
+		return -ENODEV;
+
+	data->nocl_infos[index].num_ip = of_get_child_count(nocl_np);
+	if (!data->nocl_infos[index].num_ip) {
+		BTSDBG_LOG(data->dev,
+			   "No %s ip found\n", nocl_name);
+		return -EINVAL;
+	}
+	data->nocl_infos[index].nocl_ips = devm_kcalloc(data->dev,
+						data->nocl_infos[index].num_ip,
+						sizeof(struct nocl_ip_info), GFP_KERNEL);
+	if (!data->nocl_infos[index].nocl_ips) {
+		BTSDBG_LOG(data->dev,
+			   "Unable to allocate memory for %s ip\n", nocl_name);
+		return -ENOMEM;
+	}
+	for_each_child_of_node(nocl_np, child_np) {
+		if (!child_np->name)
+			return -EINVAL;
+		data->nocl_infos[index].nocl_ips[i].ip_name = child_np->name;
+		if (of_property_read_u32(child_np, "bus-width",
+					 &data->nocl_infos[index].nocl_ips[i].ip_bus_width))
+			return -EINVAL;
+		i++;
+	}
+
+	return 0;
+}
+#endif
+
 #define NUM_COLS 2
 #define OF_DATA_NUM_MAX 16
 static int bts_parse_data(struct device_node *np, struct bts_device *data)
 {
 	struct bts_scen *scen;
 	struct bts_info *info;
+	struct device_node *child_np = NULL;
+	struct device_node *snp = NULL;
 	struct resource res;
-	int i, j, map_cnt;
+	int i, j, map_cnt, count;
 	int of_data_int_array[OF_DATA_NUM_MAX];
 	int ret = 0;
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	struct bts_urgent_lat *urgent_lat;
+	bool has_nocl2aa = false;
+	bool has_nocl2ab = false;
+#endif
 
 	if (!of_have_populated_dt()) {
 		dev_err(data->dev, "Invalid device tree node!\n");
@@ -1510,8 +1776,8 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 	}
 	data->map_row_cnt = map_cnt / NUM_COLS;
 	data->bus1_int_tbl =
-		devm_kcalloc(data->dev, data->map_row_cnt, sizeof(*data->bus1_int_tbl),
-			     GFP_KERNEL);
+		devm_kcalloc(data->dev, data->map_row_cnt, sizeof(struct bus1_int_map),
+		             GFP_KERNEL);
 	if (!data->bus1_int_tbl) {
 		dev_err(data->dev,
 			"Failed to allocate memory for bus1_int_tbl\n");
@@ -1523,15 +1789,15 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		data->bus1_int_tbl[i].int_freq = of_data_int_array[i * NUM_COLS + 1];
 	}
 
-	data->num_scen = (unsigned int)of_property_count_strings(
-			np, "list-scen");
-	if (!data->num_scen) {
+	count = of_property_count_strings(np, "list-scen");
+	if (count <= 0) {
 		BTSDBG_LOG(data->dev,
 			   "There should be at least one scenario\n");
 		ret = -EINVAL;
 		goto err;
 	}
 
+	data->num_scen = count;
 	scen = devm_kcalloc(data->dev, data->num_scen,
 			    sizeof(struct bts_scen), GFP_KERNEL);
 	if (!scen) {
@@ -1552,15 +1818,15 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		}
 	}
 
-	data->num_rts = (unsigned int)of_property_count_strings(
-			np, "rt-names");
-	if (!data->num_rts) {
+	count = of_property_count_strings(np, "rt-names");
+	if (count <= 0) {
 		BTSDBG_LOG(data->dev,
 			   "No rt names found\n");
 		ret = -EINVAL;
 		goto err;
 	}
 
+	data->num_rts = count;
 	data->rt_names = devm_kcalloc(data->dev, data->num_rts,
 				      sizeof(char *), GFP_KERNEL);
 	if (!data->rt_names) {
@@ -1587,6 +1853,50 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		goto err;
 	}
 
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	count = of_property_count_strings(np, "nocl-names");
+	if (count <= 0 || count >= data->num_bts) {
+		BTSDBG_LOG(data->dev,
+			   "No nocl names found or the count is wrong\n");
+		ret = -EINVAL;
+		goto err;
+	}
+	data->num_nocl = count;
+	data->nocl_infos = devm_kcalloc(data->dev, data->num_nocl,
+					sizeof(struct nocl_info), GFP_KERNEL);
+	if (!data->nocl_infos) {
+		ret = -ENOMEM;
+		goto err;
+	}
+	for (i = 0; i < data->num_nocl; i++) {
+		ret = of_property_read_string_index(np, "nocl-names", i,
+						    &data->nocl_infos[i].nocl_name);
+		if (ret) {
+			dev_err(data->dev,
+				"Unable to get name of nocls\n");
+			goto err;
+		}
+		if (!strcmp(data->nocl_infos[i].nocl_name, "nocl2aa"))
+			has_nocl2aa = true;
+		else if (!strcmp(data->nocl_infos[i].nocl_name, "nocl2ab"))
+			has_nocl2ab = true;
+	}
+	if (!has_nocl2aa || !has_nocl2ab) {
+		dev_err(data->dev,
+			"Missing nocl2aa and/or nocl2ab info\n");
+		goto err;
+	}
+	for (i = 0; i < data->num_nocl; i++) {
+		ret = bts_parse_nocl_data_index(np, data, i, data->nocl_infos[i].nocl_name);
+		if (ret) {
+			dev_err(data->dev,
+				"Failed to parse nocl data\n");
+			goto err;
+		}
+		INIT_LIST_HEAD(&data->nocl_infos[i].list);
+	}
+	data->num_bts -= data->num_nocl;
+#endif
 	info = devm_kcalloc(data->dev, data->num_bts,
 			    sizeof(struct bts_info), GFP_KERNEL);
 	if (!info) {
@@ -1596,7 +1906,11 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 
 	i = 0;
 
-	for_each_child_of_node_scoped(np, child_np) {
+	for_each_child_of_node(np, child_np) {
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+		if (of_property_read_bool(child_np, "nocl_node"))
+			continue;
+#endif
 		/* Parsing scenario data */
 		info[i].stat = devm_kcalloc(data->dev, data->num_scen,
 					    sizeof(struct bts_stat),
@@ -1651,8 +1965,9 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 				goto err;
 			}
 			vc_num_total++;
-		} else
+		} else {
 			info[i].name = child_np->name;
+		}
 
 		/* Register operation function */
 		ret = register_btsops(&info[i]);
@@ -1679,7 +1994,7 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		for (j = 0; j < data->num_scen; j++)
 			info[i].stat[j].stat_on = 0;
 
-		for_each_child_of_node_scoped(child_np, snp) {
+		for_each_child_of_node(child_np, snp) {
 			for (j = 0; j < data->num_scen; j++) {
 				if (strcmp(snp->name, scen[j].name))
 					continue;
@@ -1697,6 +2012,37 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		ret = -ENOMEM;
 		goto err;
 	}
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	count = of_property_count_strings(np, "list-urgent-lat");
+
+	if (count > 0) {
+		unsigned int index;
+
+		urgent_lat =
+			devm_kcalloc(data->dev, count, sizeof(struct bts_urgent_lat), GFP_KERNEL);
+		if (!urgent_lat) {
+			ret = -ENOMEM;
+			goto err;
+		}
+
+		for (i = 0; i < count; i++) {
+			ret = of_property_read_string_index(np, "list-urgent-lat", i,
+							    &urgent_lat[i].name);
+			if (ret < 0) {
+				dev_err(data->dev, "Unable to get name of urgent lat list\n");
+				goto err;
+			}
+			for (index = 0; index < data->num_bts; index++) {
+				if (strcmp(urgent_lat[i].name, info[index].name) == 0)
+					break;
+			}
+			urgent_lat[i].bts_index = index;
+		}
+		data->num_urgent_lat = count;
+		data->urgent_lat_list = urgent_lat;
+	}
+#endif
 
 	data->bts_list = info;
 	data->scen_list = scen;
@@ -1738,7 +2084,7 @@ static int bts_probe(struct platform_device *pdev)
 		return ret;
 	}
 	spin_lock_init(&btsdev->lock);
-	mutex_init(&btsdev->mutex_lock);
+	rt_mutex_init(&btsdev->mutex_lock);
 	INIT_LIST_HEAD(&btsdev->scen_node);
 
 	ret = bts_initialize(btsdev);
@@ -1769,10 +2115,12 @@ static int bts_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void bts_remove(struct platform_device *pdev)
+static int bts_remove(struct platform_device *pdev)
 {
 	devm_kfree(&pdev->dev, btsdev);
 	platform_set_drvdata(pdev, NULL);
+
+	return 0;
 }
 
 /* Device tree compatible information */
@@ -1782,6 +2130,7 @@ static const struct of_device_id exynos_bts_match[] = {
 	},
 	{ },
 };
+MODULE_DEVICE_TABLE(of, exynos_bts_match);
 
 static struct platform_driver bts_pdrv = {
 	.probe = bts_probe,

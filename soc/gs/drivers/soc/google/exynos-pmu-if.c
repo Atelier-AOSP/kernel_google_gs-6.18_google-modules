@@ -22,6 +22,8 @@
 static struct regmap *pmureg;
 static phys_addr_t pmu_alive_pa;
 static spinlock_t update_lock;
+unsigned int *pmu_cpu_offset_table;
+unsigned int pmu_cpu_offset_size;
 
 /* Atomic operation for PMU_ALIVE registers. (offset 0~0x3FFF)
  *  When the targer register can be accessed by multiple masters,
@@ -86,7 +88,66 @@ EXPORT_SYMBOL(exynos_pmu_update);
 
 #define PMU_CPU_CONFIG_BASE			0x1000
 #define PMU_CPU_STATUS_BASE			0x1004
+#define PMU_CPU_IN_BASE				0x1024
+#define PMU_CPU_IN_MASK				0xFFFE
 #define CPU_LOCAL_PWR_CFG			0x1
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+static int pmu_cpu_offset(unsigned int cpu)
+{
+	unsigned int offset = 0;
+
+	switch (cpu) {
+	case 0:
+		offset = 0x0;
+		break;
+	case 1:
+		offset = 0x80;
+		break;
+	case 2:
+		offset = 0x100;
+		break;
+	case 3:
+		offset = 0x180;
+		break;
+	case 4:
+		offset = 0x300;
+		break;
+	case 5:
+		offset = 0x380;
+		break;
+	case 6:
+		offset = 0x400;
+		break;
+	case 7:
+		offset = 0x480;
+		break;
+	case 8:
+		offset = 0x600;
+		break;
+	default:
+		pr_err("CPU index out-of-bound\n");
+		WARN_ON(1);
+		break;
+	}
+	return offset;
+}
+
+static int pmu_cpu_state(unsigned int cpu)
+{
+	unsigned int offset, val = 0;
+	if (pmu_cpu_offset_size > 0)
+		offset = pmu_cpu_offset_table[cpu];
+	else
+		offset = pmu_cpu_offset(cpu);
+
+	/*cpu power check with CLUSTER_CPU_IN - PPUHWSTAT & mask(0xFFFE)*/
+	regmap_read(pmureg, PMU_CPU_IN_BASE + offset, &val);
+
+	return (!!(val & PMU_CPU_IN_MASK));
+}
+
+#else
 
 static int pmu_cpu_offset(unsigned int cpu)
 {
@@ -125,24 +186,33 @@ static int pmu_cpu_offset(unsigned int cpu)
 	return offset;
 }
 
-static void pmu_cpu_ctrl(unsigned int cpu, int enable)
-{
-	unsigned int offset;
-
-	offset = pmu_cpu_offset(cpu);
-	exynos_pmu_update_bits(PMU_CPU_CONFIG_BASE + offset,
-			       CPU_LOCAL_PWR_CFG,
-			       enable ? CPU_LOCAL_PWR_CFG : 0);
-}
-
 static int pmu_cpu_state(unsigned int cpu)
 {
 	unsigned int offset, val = 0;
 
-	offset = pmu_cpu_offset(cpu);
+	if (pmu_cpu_offset_size > 0)
+		offset = pmu_cpu_offset_table[cpu];
+	else
+		offset = pmu_cpu_offset(cpu);
+
 	regmap_read(pmureg, PMU_CPU_STATUS_BASE + offset, &val);
 
 	return ((val & CPU_LOCAL_PWR_CFG) == CPU_LOCAL_PWR_CFG);
+}
+#endif
+
+static void pmu_cpu_ctrl(unsigned int cpu, int enable)
+{
+	unsigned int offset;
+
+	if (pmu_cpu_offset_size > 0)
+		offset = pmu_cpu_offset_table[cpu];
+	else
+		offset = pmu_cpu_offset(cpu);
+
+	exynos_pmu_update_bits(PMU_CPU_CONFIG_BASE + offset,
+			       CPU_LOCAL_PWR_CFG,
+			       enable ? CPU_LOCAL_PWR_CFG : 0);
 }
 
 #define CLUSTER_ADDR_OFFSET			0x8
@@ -295,12 +365,25 @@ static int exynos_pmu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct resource *res;
+	struct device_node *np = dev->of_node;
+	int ret;
 
 	pmureg = syscon_regmap_lookup_by_phandle(dev->of_node,
 						"samsung,syscon-phandle");
 	if (IS_ERR(pmureg)) {
 		pr_err("Fail to get regmap of PMU\n");
 		return PTR_ERR(pmureg);
+	}
+
+	ret = of_property_count_u32_elems(np, "pmu-cpu-offset");
+	if (!ret) {
+		dev_info(dev, "unabled to get pmu-cpu-offset value from DT\n");
+	} else if (ret > 0) {
+		pmu_cpu_offset_size = ret;
+		pmu_cpu_offset_table = devm_kcalloc(dev, ret, sizeof(unsigned int),
+							   GFP_KERNEL);
+		of_property_read_u32_array(np, "pmu-cpu-offset",
+					   pmu_cpu_offset_table, ret);
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pmu_alive");

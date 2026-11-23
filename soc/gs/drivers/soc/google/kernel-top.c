@@ -21,7 +21,6 @@
 #include <linux/sched/cputime.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/signal.h>
-#include <linux/vmalloc.h>
 
 #define NUM_BUSY_TASK_CHECK 5
 
@@ -40,21 +39,21 @@ struct kernel_top_context {
 /* Clone from fs/proc/stat.c. */
 #ifdef arch_idle_time
 
-static u64 ktop_get_idle_time(int cpu)
+static u64 ktop_get_idle_time(struct kernel_cpustat *kcs, int cpu)
 {
 	u64 idle;
 
-	idle = kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE];
+	idle = kcs->cpustat[CPUTIME_IDLE];
 	if (cpu_online(cpu) && !nr_iowait_cpu(cpu))
 		idle += arch_idle_time(cpu);
 	return idle;
 }
 
-static u64 get_iowait_time(int cpu)
+static u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu)
 {
 	u64 iowait;
 
-	iowait = kcpustat_cpu(cpu).cpustat[CPUTIME_IOWAIT];
+	iowait = kcs->cpustat[CPUTIME_IOWAIT];
 	if (cpu_online(cpu) && nr_iowait_cpu(cpu))
 		iowait += arch_idle_time(cpu);
 	return iowait;
@@ -62,7 +61,7 @@ static u64 get_iowait_time(int cpu)
 
 #else
 
-static u64 ktop_get_idle_time(int cpu)
+static u64 ktop_get_idle_time(struct kernel_cpustat *kcs, int cpu)
 {
 	u64 idle, idle_usecs = -1ULL;
 
@@ -71,14 +70,14 @@ static u64 ktop_get_idle_time(int cpu)
 
 	if (idle_usecs == -1ULL)
 		/* !NO_HZ or cpu offline so we can rely on cpustat.idle */
-		idle = kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE];
+		idle = kcs->cpustat[CPUTIME_IDLE];
 	else
 		idle = idle_usecs * NSEC_PER_USEC;
 
 	return idle;
 }
 
-static u64 get_iowait_time(int cpu)
+static u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu)
 {
 	u64 iowait, iowait_usecs = -1ULL;
 
@@ -87,7 +86,7 @@ static u64 get_iowait_time(int cpu)
 
 	if (iowait_usecs == -1ULL)
 		/* !NO_HZ or cpu offline so we can rely on cpustat.iowait */
-		iowait = kcpustat_cpu(cpu).cpustat[CPUTIME_IOWAIT];
+		iowait = kcs->cpustat[CPUTIME_IOWAIT];
 	else
 		iowait = iowait_usecs * NSEC_PER_USEC;
 
@@ -96,37 +95,33 @@ static u64 get_iowait_time(int cpu)
 
 #endif
 
-static void get_all_cpustat(struct kernel_cpustat *cpu_stat)
+static void get_all_cpustat(struct kernel_cpustat *total_cpu_stat)
 {
 	int cpu;
 
-	if (!cpu_stat)
+	if (!total_cpu_stat)
 		return;
 
-	memset(cpu_stat, 0, sizeof(struct kernel_cpustat));
+	memset(total_cpu_stat, 0, sizeof(struct kernel_cpustat));
 
 #ifdef CONFIG_SMP
 	for_each_possible_cpu(cpu) {
-		cpu_stat->cpustat[CPUTIME_USER] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_USER];
-		cpu_stat->cpustat[CPUTIME_NICE] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
-		cpu_stat->cpustat[CPUTIME_SYSTEM] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_SYSTEM];
-		cpu_stat->cpustat[CPUTIME_IDLE] +=
-			ktop_get_idle_time(cpu);
-		cpu_stat->cpustat[CPUTIME_IOWAIT] +=
-			get_iowait_time(cpu);
-		cpu_stat->cpustat[CPUTIME_IRQ] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_IRQ];
-		cpu_stat->cpustat[CPUTIME_SOFTIRQ] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_SOFTIRQ];
-		cpu_stat->cpustat[CPUTIME_STEAL] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
-		cpu_stat->cpustat[CPUTIME_GUEST] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_GUEST];
-		cpu_stat->cpustat[CPUTIME_GUEST_NICE] +=
-			kcpustat_cpu(cpu).cpustat[CPUTIME_GUEST_NICE];
+		struct kernel_cpustat kcpustat;
+		u64 *cpustat = kcpustat.cpustat;
+
+		kcpustat_cpu_fetch(&kcpustat, cpu);
+
+		total_cpu_stat->cpustat[CPUTIME_USER]		+= cpustat[CPUTIME_USER];
+		total_cpu_stat->cpustat[CPUTIME_NICE]		+= cpustat[CPUTIME_NICE];
+		total_cpu_stat->cpustat[CPUTIME_SYSTEM]		+= cpustat[CPUTIME_SYSTEM];
+		total_cpu_stat->cpustat[CPUTIME_IDLE]		+= ktop_get_idle_time(&kcpustat,
+										      cpu);
+		total_cpu_stat->cpustat[CPUTIME_IOWAIT]		+= get_iowait_time(&kcpustat, cpu);
+		total_cpu_stat->cpustat[CPUTIME_IRQ]		+= cpustat[CPUTIME_IRQ];
+		total_cpu_stat->cpustat[CPUTIME_SOFTIRQ]	+= cpustat[CPUTIME_SOFTIRQ];
+		total_cpu_stat->cpustat[CPUTIME_STEAL]		+= cpustat[CPUTIME_STEAL];
+		total_cpu_stat->cpustat[CPUTIME_GUEST]		+= cpustat[CPUTIME_GUEST];
+		total_cpu_stat->cpustat[CPUTIME_GUEST_NICE]	+= cpustat[CPUTIME_GUEST_NICE];
 	}
 #endif
 }
@@ -306,11 +301,7 @@ int kernel_top_init(struct device *dev, struct kernel_top_context **pcxt)
 	return 0;
 
 err_alloc:
-	vfree(cxt->prev_tasktics_array);
-	vfree(cxt->frame_tasktics_array);
-	vfree(cxt->task_ptr_array);
-	vfree(cxt->curr_task_pid_array);
-	devm_kfree(dev, cxt);
+	kernel_top_destroy(cxt);
 
 	return -ENOMEM;
 }

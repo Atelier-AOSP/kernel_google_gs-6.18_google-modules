@@ -10,12 +10,11 @@
 #ifndef __LINUX_USB_DWC3_OTG_H
 #define __LINUX_USB_DWC3_OTG_H
 #include <linux/pm_qos.h>
-#include <misc/gvotable.h>
-#include <soc/google/exynos_pm_qos.h>
+#include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
-#include <linux/kernfs.h>
 #include <linux/usb/role.h>
 
+#include <misc/gvotable.h>
 #include <soc/google/exynos_pm_qos.h>
 
 /**
@@ -35,10 +34,9 @@ struct dwc3_otg {
 	enum usb_role		current_role;
 	/* New data role that is updated before the data role change is executed */
 	enum usb_role		desired_role;
-	struct kernfs_node      *desired_role_kn;
+	struct kernfs_node	*desired_role_kn;
 
 	int			otg_connection;
-
 
 	struct exynos_pm_qos_request	pm_qos_int_req;
 	int				pm_qos_int_val;
@@ -49,7 +47,7 @@ struct dwc3_otg {
 	struct completion	resume_cmpl;
 	int			dwc3_suspended;
 	int			in_shutdown;
-	bool			skip_retry;
+	bool			usb_charged;
 
 	struct mutex lock;
 	struct mutex		role_lock;
@@ -63,8 +61,10 @@ void dwc3_exynos_otg_exit(struct dwc3 *dwc, struct dwc3_exynos *exynos);
 bool dwc3_otg_check_usb_suspend(struct dwc3_exynos *exynos);
 int dwc3_otg_start_host(struct dwc3_otg *dotg, int on);
 int dwc3_otg_start_gadget(struct dwc3_otg *dotg, int on);
+void dwc3_otg_gadget_handler(struct usb_gadget *gadget, bool status);
 enum usb_role dwc3_exynos_wait_role(struct dwc3_otg *dotg);
 void dwc3_exynos_set_role(struct dwc3_otg *dotg);
+int usb_power_notify_control(int on);
 
 extern void __iomem *phycon_base_addr;
 extern int exynos_usbdrd_pipe3_enable(struct phy *phy);

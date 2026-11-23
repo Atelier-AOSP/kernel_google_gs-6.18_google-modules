@@ -1,14 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # kernel vendor hook modules
 
-config VH_CLOCKTRACE
-	tristate "Vendor Clock trace support"
-	depends on VH_KERNEL
-	depends on TRACING
-	default m
-	help
-	  Support clock trace events for clock enable/disable and rate change.
-
 config VH_SYSTRACE
 	tristate "Vendor SYSTRACE support"
 	depends on VH_KERNEL
@@ -30,30 +22,48 @@ config PIXEL_EM
 	help
 	  Support Pixel Energy Model.
 
-config PIXEL_METRICS
-	tristate "Enable PIXEL METRICS driver"
-	depends on VH_KERNEL
+config PIXEL_EM_VOLTAGE_SCALING
+	tristate "Enable Pixel energy model with voltage scaling"
+	depends on PIXEL_EM
 	default n
+	help
+	  Support Pixel energy model with voltage scaling.
 
-config VH_THERMAL
-	tristate "Vendor hooks for kernel thermal"
-	depends on VH_KERNEL
-	default m
+config PIXEL_EM_FREQUENCY_SCALING
+	tristate "Enable Pixel energy model with frequency scaling"
+	depends on PIXEL_EM
+	default n
+	help
+	  Support Pixel energy model with frequency scaling.
+
+config PIXEL_METRICS
+        tristate "Enable PIXEL METRICS driver"
+        depends on VH_KERNEL
+        default n
+
+config CPUIDLE_METRICS
+	bool "Use cpu idle metrics module"
+	depends on PIXEL_METRICS
+	default y
 
 config VH_FS
 	tristate "Vendor hooks for filesystem"
 	depends on VH_KERNEL
-	default m
+	default n
 
 config VH_MM
 	tristate "Vendor hooks for Memory Management"
 	depends on VH_KERNEL
-	default m
+	default n
 
 config VH_CGROUP
 	tristate "Vendor hooks for cgroup"
 	depends on VH_KERNEL
 	default n
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/vh/kernel/sched/Kconfig"
+config VH_THERMAL
+	tristate "Vendor hooks for kernel thermal"
+	depends on VH_KERNEL
+	default n
 
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/vh/kernel/sched/Kconfig"

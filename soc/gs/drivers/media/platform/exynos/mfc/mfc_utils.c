@@ -17,34 +17,6 @@
 #include "mfc_mem.h"
 #include "mfc_queue.h"
 
-void mfc_core_handle_error(struct mfc_core *core)
-{
-	struct mfc_dev *dev = core->dev;
-	struct mfc_ctx *ctx;
-	struct mfc_core_ctx *core_ctx;
-	int i;
-
-	mfc_core_err("[MSR] >>>>>>>> MFC CORE is Error state <<<<<<<<\n");
-	mfc_core_change_state(core, MFCCORE_ERROR);
-
-	mutex_lock(&dev->mfc_mutex);
-	for (i = 0; i < MFC_NUM_CONTEXTS; i++) {
-		if (!core->core_ctx[i])
-			continue;
-		/* TODO: need to check two core mode */
-		core_ctx = core->core_ctx[i];
-		mfc_change_state(core_ctx, MFCINST_ERROR);
-		ctx = core_ctx->ctx;
-
-		/* Mark all dst buffers as having an error */
-		mfc_cleanup_queue(&ctx->buf_queue_lock, &ctx->dst_buf_queue);
-		/* Mark all src buffers as having an error */
-		mfc_cleanup_queue(&ctx->buf_queue_lock, &ctx->src_buf_ready_queue);
-		mfc_cleanup_queue(&ctx->buf_queue_lock, &core_ctx->src_buf_queue);
-	}
-	mutex_unlock(&dev->mfc_mutex);
-}
-
 int mfc_check_vb_with_fmt(struct mfc_fmt *fmt, struct vb2_buffer *vb)
 {
 	struct mfc_ctx *ctx = vb->vb2_queue->drv_priv;
@@ -711,7 +683,7 @@ void mfc_calc_base_addr(struct mfc_ctx *ctx, struct vb2_buffer *vb,
 
 void mfc_core_meerkat_tick(struct timer_list *t)
 {
-	struct mfc_core *core = timer_container_of(core, t, meerkat_timer);
+	struct mfc_core *core = from_timer(core, t, meerkat_timer);
 
 	mfc_core_debug(5, "meerkat is ticking!\n");
 
@@ -777,7 +749,7 @@ void mfc_core_meerkat_reset_tick(struct mfc_core *core)
 
 void mfc_core_idle_checker(struct timer_list *t)
 {
-	struct mfc_core *core = timer_container_of(core, t, mfc_idle_timer);
+	struct mfc_core *core = from_timer(core, t, mfc_idle_timer);
 	struct mfc_dev *dev = core->dev;
 
 	mfc_core_debug(5, "[MFCIDLE] MFC HW idle checker is ticking!\n");
@@ -795,8 +767,11 @@ void mfc_core_idle_checker(struct timer_list *t)
 
 	if (atomic_read(&core->qos_req_cur) == 0) {
 		mfc_core_debug(6, "[MFCIDLE] MFC QoS not started yet\n");
-		mfc_core_idle_checker_start_tick(core);
-		return;
+		/* do not skip idle control when idle suspend is enable */
+		if (!idle_suspend_enable) {
+			mfc_core_idle_checker_start_tick(core);
+			return;
+		}
 	}
 
 	if (atomic_read(&core->hw_run_cnt)) {
@@ -809,8 +784,15 @@ void mfc_core_idle_checker(struct timer_list *t)
 		return;
 	}
 
+	if (atomic_read(&core->during_idle_resume)) {
+		mfc_core_idle_checker_start_tick(core);
+		return;
+	}
+
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
-	mfc_core_change_idle_mode(core, MFC_IDLE_MODE_RUNNING);
-	queue_work(core->mfc_idle_wq, &core->mfc_idle_work);
+	if (!atomic_read(&core->during_release)) {
+	    mfc_core_change_idle_mode(core, MFC_IDLE_MODE_RUNNING);
+	    queue_work(core->mfc_idle_wq, &core->mfc_idle_work);
+	}
 #endif
 }

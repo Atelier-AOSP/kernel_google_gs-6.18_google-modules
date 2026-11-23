@@ -8,10 +8,10 @@
 
 #include <linux/async.h>
 #include <linux/bug.h>
-#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <../drivers/pinctrl/samsung/pinctrl-samsung.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -304,8 +304,7 @@ static struct regulator_desc regulators[S2MPG13_REGULATOR_MAX] = {
 static int s2mpg13_pmic_dt_parse_pdata(struct s2mpg13_dev *iodev,
 				       struct s2mpg13_platform_data *pdata)
 {
-	struct device_node *pmic_np;
-	struct device_node *regulators_np __free(device_node) = NULL;
+	struct device_node *pmic_np, *regulators_np, *reg_np;
 	struct s2mpg13_regulator_data *rdata;
 	unsigned int i;
 	int ret, len;
@@ -318,22 +317,25 @@ static int s2mpg13_pmic_dt_parse_pdata(struct s2mpg13_dev *iodev,
 		return -ENODEV;
 	}
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(pmic_np);
 	regulators_np = of_find_node_by_name(pmic_np, "regulators");
 	if (!regulators_np) {
 		dev_err(iodev->dev, "could not find regulators sub-node\n");
 		return -EINVAL;
 	}
 
-	pdata->num_regulators = of_get_child_count(regulators_np);
-	rdata = devm_kcalloc(iodev->dev, pdata->num_regulators, sizeof(*rdata),
+	/* count the number of regulators to be supported in pmic */
+	pdata->num_regulators = 0;
+	for_each_child_of_node(regulators_np, reg_np) {
+		pdata->num_regulators++;
+	}
+
+	rdata = devm_kzalloc(iodev->dev, sizeof(*rdata) * pdata->num_regulators,
 			     GFP_KERNEL);
 	if (!rdata)
 		return -ENOMEM;
 
 	pdata->regulators = rdata;
-	for_each_child_of_node_scoped(regulators_np, reg_np) {
+	for_each_child_of_node(regulators_np, reg_np) {
 		for (i = 0; i < ARRAY_SIZE(regulators); i++)
 			if (!of_node_cmp(reg_np->name, regulators[i].name))
 				break;
@@ -348,12 +350,7 @@ static int s2mpg13_pmic_dt_parse_pdata(struct s2mpg13_dev *iodev,
 		rdata->id = i;
 		rdata->initdata = of_get_regulator_init_data(iodev->dev, reg_np,
 							     &regulators[i]);
-		/*
-		 * We take an extra reference here, as reg_node/reg_np goes out
-		 * of scope otherwise, to later pass the node into
-		 * regulator_register() in s2mpg13_pmic_probe().
-		 */
-		rdata->reg_node = of_node_get(reg_np);
+		rdata->reg_node = reg_np;
 		rdata++;
 	}
 
@@ -373,12 +370,10 @@ static int s2mpg13_pmic_dt_parse_pdata(struct s2mpg13_dev *iodev,
 	of_property_read_u32(pmic_np, "buck_ocp_ctrl7", &pdata->buck_ocp_ctrl7);
 
 	/* parse OCP_WARN information */
-	pdata->b2_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 0,
-						      GPIOD_ASIS);
-	if (IS_ERR(pdata->b2_ocp_warn_pin))
-		dev_err(iodev->dev,
-			"failed to get b2_ocp_warn_pin gpio: %ld\n",
-			PTR_ERR(pdata->b2_ocp_warn_pin));
+	pdata->b2_ocp_warn_pin = of_get_gpio(pmic_np, 0);
+	if (pdata->b2_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b2_ocp_warn_pin < 0: %d\n",
+			pdata->b2_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b2_ocp_warn_en", &val);
 	pdata->b2_ocp_warn_en = ret ? 0 : val;
@@ -393,12 +388,10 @@ static int s2mpg13_pmic_dt_parse_pdata(struct s2mpg13_dev *iodev,
 	pdata->b2_ocp_warn_lvl = ret ? 0 : val;
 
 	/* parse SOFT_OCP_WARN information */
-	pdata->b2_soft_ocp_warn_pin = devm_gpiod_get_index(iodev->dev, NULL, 1,
-							   GPIOD_ASIS);
-	if (IS_ERR(pdata->b2_soft_ocp_warn_pin))
-		dev_err(iodev->dev,
-			"failed to get b2_soft_ocp_warn_pin: %ld\n",
-			PTR_ERR(pdata->b2_soft_ocp_warn_pin));
+	pdata->b2_soft_ocp_warn_pin = of_get_gpio(pmic_np, 1);
+	if (pdata->b2_soft_ocp_warn_pin < 0)
+		dev_err(iodev->dev, "b2_soft_ocp_warn_pin < 0: %d\n",
+			pdata->b2_soft_ocp_warn_pin);
 
 	ret = of_property_read_u32(pmic_np, "b2_soft_ocp_warn_en", &val);
 	pdata->b2_soft_ocp_warn_en = ret ? 0 : val;
@@ -744,41 +737,35 @@ static int s2mpg13_pmic_probe(struct platform_device *pdev)
 	struct s2mpg13_pmic *s2mpg13;
 	int i, ret;
 
+	if (iodev->dev->of_node) {
+		ret = s2mpg13_pmic_dt_parse_pdata(iodev, pdata);
+		if (ret)
+			return ret;
+	}
+
 	if (!pdata) {
 		dev_err(pdev->dev.parent, "Platform data not supplied\n");
 		return -ENODEV;
 	}
 
-	if (iodev->dev->of_node) {
-		ret = s2mpg13_pmic_dt_parse_pdata(iodev, pdata);
-		if (ret)
-			goto out_release_of_nodes;
-	}
-
 	s2mpg13 = devm_kzalloc(&pdev->dev, sizeof(struct s2mpg13_pmic),
 			       GFP_KERNEL);
-	if (!s2mpg13) {
-		ret = -ENOMEM;
-		goto out_release_of_nodes;
-	}
+	if (!s2mpg13)
+		return -ENOMEM;
 
 	s2mpg13->rdev = devm_kzalloc(&pdev->dev,
 				     sizeof(struct regulator_dev *) *
 					     S2MPG13_REGULATOR_MAX,
 				     GFP_KERNEL);
-	if (!s2mpg13->rdev) {
-		ret = -ENOMEM;
-		goto out_release_of_nodes;
-	}
+	if (!s2mpg13->rdev)
+		return -ENOMEM;
 
 	s2mpg13->opmode =
 		devm_kzalloc(&pdev->dev,
 			     sizeof(unsigned int) * S2MPG13_REGULATOR_MAX,
 			     GFP_KERNEL);
-	if (!s2mpg13->opmode) {
-		ret = -ENOMEM;
-		goto out_release_of_nodes;
-	}
+	if (!s2mpg13->opmode)
+		return -ENOMEM;
 
 	s2mpg13->iodev = iodev;
 	s2mpg13->i2c = iodev->pmic;
@@ -800,17 +787,10 @@ static int s2mpg13_pmic_probe(struct platform_device *pdev)
 
 		s2mpg13->rdev[i] = devm_regulator_register(&pdev->dev,
 							   &regulators[id], &config);
-		/*
-		 * regulator_register() bumps the reference count, so now it's
-		 * safe to drop the extra reference again which we took in
-		 * s2mpg13_pmic_dt_parse_pdata().
-		 */
-		of_node_put(pdata->regulators[i].reg_node);
-		pdata->regulators[i].reg_node = NULL;
 		if (IS_ERR(s2mpg13->rdev[i])) {
 			ret = PTR_ERR(s2mpg13->rdev[i]);
 			dev_err(&pdev->dev, "regulator init failed for %d\n", i);
-			goto out_release_of_nodes;
+			return ret;
 		}
 	}
 
@@ -845,12 +825,6 @@ static int s2mpg13_pmic_probe(struct platform_device *pdev)
 #endif
 
 	return 0;
-
-out_release_of_nodes:
-	for (i = 0; i < pdata->num_regulators; ++i)
-		of_node_put(pdata->regulators[i].reg_node);
-
-	return ret;
 }
 
 static int s2mpg13_pmic_remove(struct platform_device *pdev)

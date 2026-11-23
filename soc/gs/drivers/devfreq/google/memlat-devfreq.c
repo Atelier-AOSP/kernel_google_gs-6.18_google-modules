@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright 2020 Google, Inc.
+ * Copyright 2022 Google, Inc.
  *
- * Google GS101 SoC devfreq driver
+ * Google ZUMA SoC devfreq driver
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published
@@ -11,25 +11,23 @@
  *
  */
 
-#include <linux/mod_devicetable.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 #include <soc/google/cal-if.h>
 #include <soc/google/exynos-devfreq.h>
 #include <soc/google/ect_parser.h>
-#include <dt-bindings/soc/google/gs101-devfreq.h>
-#include <trace/events/clock.h>
+#include <dt-bindings/soc/google/zuma-devfreq.h>
+#include <trace/events/power.h>
 #include "governor.h"
 #include "governor_memlat.h"
+#include "arm-memlat-mon.h"
 
-#define MEMLAT_DEVFREQ_MODULE_NAME	"gs101-memlat-devfreq"
+#define MEMLAT_DEVFREQ_MODULE_NAME	"zuma-memlat-devfreq"
 #define HZ_PER_KHZ	1000
 
-static struct device  *memlat_dev_array[CONFIG_VH_SCHED_MAX_CPU_NR];
 static struct exynos_pm_qos_request *memlat_cpu_qos_array[CONFIG_VH_SCHED_MAX_CPU_NR];
-static int memlat_cpuidle_state_aware[CONFIG_VH_SCHED_MAX_CPU_NR];
+static struct device  *memlat_dev_array[CONFIG_VH_SCHED_MAX_CPU_NR];
 static spinlock_t memlat_cpu_lock;
+static int memlat_cpuidle_state_aware[CONFIG_VH_SCHED_MAX_CPU_NR];
 static bool arm_mon_probe_done;
 
 struct device **get_memlat_dev_array(void)
@@ -51,7 +49,7 @@ int *get_memlat_cpuidle_state_aware(void)
 EXPORT_SYMBOL_GPL(get_memlat_cpuidle_state_aware);
 
 static int gs_memlat_devfreq_target(struct device *parent,
-				    unsigned long *target_freq, u32 flags)
+				  unsigned long *target_freq, u32 flags)
 {
 	struct platform_device *pdev = container_of(parent, struct platform_device, dev);
 	struct exynos_devfreq_data *data = platform_get_drvdata(pdev);
@@ -187,6 +185,12 @@ static int exynos_devfreq_parse_dt(struct device_node *np,
 	if (of_property_read_u32(np, "cpu", &data->cpu))
 		return -ENODEV;
 
+	data->min_freq = 0;
+
+	if (of_property_read_u32(np, "max-freq", &data->max_freq)) {
+		data->max_freq = INT_MAX;
+	}
+
 #if IS_ENABLED(CONFIG_ECT)
 	if (of_property_read_string(np, "devfreq_domain_name",
 				    &devfreq_domain_name))
@@ -195,9 +199,6 @@ static int exynos_devfreq_parse_dt(struct device_node *np,
 	not_using_ect = exynos_devfreq_parse_ect(data, devfreq_domain_name);
 #endif
 
-
-	data->min_freq = 0;
-	data->max_freq = INT_MAX;
 
 	if (of_property_read_u32(np, "governor", &data->gov_type))
 		return -ENODEV;
@@ -243,10 +244,9 @@ static int exynos_init_freq_table(struct exynos_devfreq_data *data)
 			return ret;
 		}
 
-		dev_info(data->dev, "DEVFREQ : %8uKhz, %8uuV\n", freq,
+		dev_dbg(data->dev, "DEVFREQ : %8uKhz, %8uuV\n", freq,
 			 volt);
 	}
-
 	ret = exynos_devfreq_init_freq_table(data);
 	if (ret) {
 		dev_err(data->dev, "failed init frequency table\n");
@@ -323,6 +323,7 @@ static int gs_memlat_devfreq_probe(struct platform_device *pdev)
 	exynos_pm_qos_add_request(&data->sys_pm_qos_min,
 				  (int)data->pm_qos_class,
 				  data->min_freq);
+
 	memlat_cpu_qos_array[data->cpu] = &data->sys_pm_qos_min;
 	memlat_dev_array[data->cpu] = data->dev;
 
@@ -354,7 +355,7 @@ err_data:
 	return ret;
 }
 
-static void gs_memlat_devfreq_remove(struct platform_device *pdev)
+static int gs_memlat_devfreq_remove(struct platform_device *pdev)
 {
 	struct exynos_devfreq_data *data = platform_get_drvdata(pdev);
 
@@ -367,6 +368,8 @@ static void gs_memlat_devfreq_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	mutex_destroy(&data->lock);
 	kfree(data);
+
+	return 0;
 }
 
 static struct platform_device_id gs_memlat_devfreq_driver_ids[] = {

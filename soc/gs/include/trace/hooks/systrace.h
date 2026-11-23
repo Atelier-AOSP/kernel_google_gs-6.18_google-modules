@@ -47,7 +47,7 @@ TRACE_EVENT(0,
 	TP_fast_assign(
 		__entry->flag = flag;
 		__entry->pid = pid;
-		__assign_str(name);
+		__assign_str(name, name);
 		__entry->value = value;
 	),
 	TP_printk("%s|%d|%s|%lld",
@@ -96,8 +96,8 @@ do {					\
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#undef TRACE_INCLUDE_FILE
 #define TRACE_INCLUDE_PATH trace/hooks
+#undef TRACE_INCLUDE_FILE
 #define TRACE_INCLUDE_FILE systrace
 
 #include <trace/define_trace.h>

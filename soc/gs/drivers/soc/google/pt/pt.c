@@ -11,8 +11,6 @@
 
 #include <soc/google/pt.h>
 #include "pt_trace.h"
-#include <linux/err.h>
-#include <linux/fortify-string.h>
 #include <linux/list.h>
 #include <linux/of_platform.h>
 #include <linux/module.h>
@@ -26,16 +24,9 @@
 #include <asm/sysreg.h>
 
 
+#define PT_SYSCTL_ENTRY 9
 #define PT_COMMAND_SIZE 128
-#define PT_COMMAND_SIZE_STR "128"
-
-/*
- * PT_BASE_* is the size of the known parts of the sysctl path in "dev/pt/"(7)
- * and null char(1).
- */
-#define PT_BASE_PATH_SIZE 8
-#define PT_HANDLE_NAME_MAX_SIZE 50
-#define PT_NODE_NAME_MAX_SIZE 50
+#define PT_COMMAND_SIZE_STR "127"
 
 struct pt_pts {
 	bool enabled;
@@ -68,18 +59,6 @@ struct pt_properties {
  *	driver->mt can be taken. They will be forwarded to resize_thread.
  */
 
-struct pt_handle { /* one per client */
-	spinlock_t lock; /* serialize write access to the handle */
-	struct list_head list;
-	pt_resize_callback_t resize_callback;
-	int id_cnt;
-	struct pt_pts *pts; /* client partitions */
-	struct device_node *node; /* client node */
-	struct ctl_table *sysctl_table;
-	struct ctl_table_header *sysctl_header;
-	void *data; /* client private data */
-};
-
 struct pt_driver { /* one per driver */
 	/* partition properties in driver node */
 	struct pt_properties *properties;
@@ -91,7 +70,7 @@ struct pt_driver { /* one per driver */
 	struct device_node *node; /* driver node */
 	void *data; /* driver private data */
 	struct ctl_table_header *sysctl_header;
-	struct ctl_table sysctl_table[2];
+	struct ctl_table sysctl_table[PT_SYSCTL_ENTRY];
 };
 
 struct pt_global {
@@ -108,7 +87,7 @@ struct {
 	spinlock_t sl;
 	char sysctl_command[PT_COMMAND_SIZE];
 	char sysctl_node_name[PT_COMMAND_SIZE];
-	struct ctl_table sysctl_table[3];
+	struct ctl_table sysctl_table[PT_SYSCTL_ENTRY];
 	u32 timestamp;
 	u32 size;
 	int enabled;
@@ -499,63 +478,47 @@ static void pt_handle_check(struct pt_handle *handle, int id)
 		panic("%s %s %d unknown\n", __func__, handle->node->name, id);
 }
 
-static int pt_handle_sysctl_register(struct pt_handle *handle)
+static void pt_handle_sysctl_register(struct pt_handle *handle)
 {
+	int id;
 	struct ctl_table *sysctl_table;
-	char *tmp_dir_path;
-	size_t handle_name_len, tmp_dir_path_len;
-	int id, ret, bytes_written;
+	int entry_cnt = 6 + handle->id_cnt + 1;
 
-	sysctl_table = kcalloc(handle->id_cnt, sizeof(*sysctl_table),
-			       GFP_KERNEL);
+	sysctl_table = kmalloc_array(entry_cnt, sizeof(*sysctl_table),
+					GFP_KERNEL);
 	if (!sysctl_table)
-		return -ENOMEM;
-
-	handle_name_len = strnlen(handle->node->name, PT_HANDLE_NAME_MAX_SIZE);
-	tmp_dir_path_len = PT_BASE_PATH_SIZE + handle_name_len;
-	tmp_dir_path = kzalloc(tmp_dir_path_len, GFP_KERNEL);
-	if (!tmp_dir_path) {
-		ret = -ENOMEM;
-		goto exit_free_sysctl_table;
-	}
-
-	bytes_written = snprintf(tmp_dir_path, tmp_dir_path_len, "dev/pt/%s",
-				 handle->node->name);
-	if (tmp_dir_path_len <= bytes_written) {
-		ret = -ENOENT;
-		goto exit_free_tmp_dir_path;
-	}
-
+		return;
+	memset(sysctl_table, 0, sizeof(*sysctl_table) * entry_cnt);
+	sysctl_table[0].procname = "dev";
+	sysctl_table[0].mode = 0550;
+	sysctl_table[0].child = &sysctl_table[2];
+	sysctl_table[2].procname = "pt";
+	sysctl_table[2].mode = 0550;
+	sysctl_table[2].child = &sysctl_table[4];
+	sysctl_table[4].procname = handle->node->name;
+	sysctl_table[4].mode = 0550;
+	sysctl_table[4].child = &sysctl_table[6];
 	for (id = 0; id < handle->id_cnt; id++) {
 		struct device_node **nodes =
 			handle->pts[id].driver->properties->nodes;
 		int property_index = handle->pts[id].property_index;
 
-		sysctl_table[id].procname = nodes[property_index]->name;
-		sysctl_table[id].data = &handle->pts[id];
+		sysctl_table[6 + id].procname = nodes[property_index]->name;
+		sysctl_table[6 + id].data = &handle->pts[id];
 
 		// Don't show the handle and driver pointers in sysctl
-		sysctl_table[id].maxlen =
+		sysctl_table[6 + id].maxlen =
 			(long long)&(((struct pt_pts *)NULL)->handle);
-		sysctl_table[id].mode = 0444;
-		sysctl_table[id].proc_handler = proc_dointvec;
+		sysctl_table[6 + id].mode = 0444;
+		sysctl_table[6 + id].proc_handler = proc_dointvec;
 	}
-
-	handle->sysctl_header = register_sysctl_sz(tmp_dir_path, sysctl_table,
-						   handle->id_cnt);
-	if (handle->sysctl_header == NULL) {
-		ret = -ENOENT;
-		goto exit_free_tmp_dir_path;
-	}
-
-	kfree(tmp_dir_path);
-	return 0;
-
-exit_free_tmp_dir_path:
-	kfree(tmp_dir_path);
-exit_free_sysctl_table:
-	kfree(sysctl_table);
-	return ret;
+	handle->sysctl_header =
+		register_sysctl_table(sysctl_table);
+	if (IS_ERR(handle->sysctl_header)) {
+		handle->sysctl_header = NULL;
+		kfree(sysctl_table);
+	} else
+		handle->sysctl_table = sysctl_table;
 }
 
 static void pt_handle_sysctl_unregister(struct pt_handle *handle)
@@ -822,7 +785,7 @@ void pt_client_unregister(struct pt_handle *handle)
 struct pt_handle *pt_client_register(struct device_node *node, void *data,
 	pt_resize_callback_t resize_callback)
 {
-	int id, ret;
+	int id;
 	unsigned long flags;
 	struct pt_handle *handle;
 	const char *propname = "pt_id";
@@ -848,7 +811,11 @@ struct pt_handle *pt_client_register(struct device_node *node, void *data,
 		const char *name;
 		struct pt_driver *driver;
 		int index;
-		ret = of_property_read_string_index(node, propname, id, &name);
+		int ret = of_property_read_string_index(node,
+						propname,
+						id,
+						&name);
+
 		if (ret != 0) {
 			kfree(handle);
 			return ERR_PTR(-ENOENT);
@@ -863,11 +830,7 @@ struct pt_handle *pt_client_register(struct device_node *node, void *data,
 		handle->pts[id].enabled = false;
 		handle->pts[id].ptid = PT_PTID_INVALID;
 	}
-	ret = pt_handle_sysctl_register(handle);
-	if (ret) {
-		kfree(handle);
-		return ERR_PTR(ret);
-	}
+	pt_handle_sysctl_register(handle);
 
 	// Check if the node was not registered
 	spin_lock_irqsave(&pt_internal_data.sl, flags);
@@ -885,13 +848,12 @@ struct pt_driver *pt_driver_register(struct device_node *node,
 {
 	unsigned long flags;
 	struct pt_driver *driver;
-	char *tmp_dir_path;
-	size_t driver_name_len, tmp_dir_path_len;
-	size_t size;
-	int ret, bytes_written;
 	int cnt = 0;
+	size_t size;
+	struct device_node *child;
 
-	for_each_child_of_node_scoped(node, child) {
+	for (child = of_get_next_child(node, NULL); child;
+	     child = of_get_next_child(node, child)) {
 		int size;
 
 		if (!of_get_property(child, "id_size_priority", &size))
@@ -903,7 +865,7 @@ struct pt_driver *pt_driver_register(struct device_node *node,
 		+ cnt * sizeof(struct device_node *);
 	driver = kmalloc(size, GFP_KERNEL);
 	if (driver == NULL)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 	memset(driver, 0, size);
 	spin_lock_init(&driver->lock);
 	driver->ops = ops;
@@ -916,7 +878,8 @@ struct pt_driver *pt_driver_register(struct device_node *node,
 	driver->properties->cnt = cnt;
 
 	cnt = 0;
-	for_each_child_of_node_scoped(node, child) {
+	for (child = of_get_next_child(node, NULL); child;
+		child = of_get_next_child(node, child)) {
 		int size;
 
 		if (!of_get_property(child, "id_size_priority", &size))
@@ -939,51 +902,36 @@ struct pt_driver *pt_driver_register(struct device_node *node,
 		cnt++;
 	}
 
-	driver_name_len = strnlen(driver->node->name, PT_NODE_NAME_MAX_SIZE);
-	tmp_dir_path_len = PT_BASE_PATH_SIZE + driver_name_len;
-	tmp_dir_path = kzalloc(tmp_dir_path_len, GFP_KERNEL);
-	if (!tmp_dir_path) {
-		ret = -ENOMEM;
-		goto exit_free_driver;
-	}
+	driver->sysctl_table[0].procname = "dev";
+	driver->sysctl_table[0].mode = 0550;
+	driver->sysctl_table[0].child = &driver->sysctl_table[2];
+	driver->sysctl_table[2].procname = "pt";
+	driver->sysctl_table[2].mode = 0550;
+	driver->sysctl_table[2].child = &driver->sysctl_table[4];
+	driver->sysctl_table[4].procname = driver->node->name;
+	driver->sysctl_table[4].mode = 0550;
+	driver->sysctl_table[4].child = &driver->sysctl_table[6];
+	driver->sysctl_table[6].procname = "ref";
+	driver->sysctl_table[6].data = &driver->ref;
+	driver->sysctl_table[6].maxlen = sizeof(driver->ref);
+	driver->sysctl_table[6].mode = 0440;
+	driver->sysctl_table[6].proc_handler = proc_dointvec;
+	driver->sysctl_table[7].procname = "ioctl_ret";
+	driver->sysctl_table[7].data = &driver->ioctl_ret;
+	driver->sysctl_table[7].maxlen = sizeof(driver->ioctl_ret);
+	driver->sysctl_table[7].mode = 0440;
+	driver->sysctl_table[7].proc_handler = proc_dointvec;
 
-	bytes_written = snprintf(tmp_dir_path, tmp_dir_path_len, "dev/pt/%s",
-				 driver->node->name);
-	if (tmp_dir_path_len <= bytes_written) {
-		ret = -ENOENT;
-		goto exit_free_tmp_dir_path;
-	}
-
-	driver->sysctl_table[0].procname = "ref";
-	driver->sysctl_table[0].data = &driver->ref;
-	driver->sysctl_table[0].maxlen = sizeof(driver->ref);
-	driver->sysctl_table[0].mode = 0440;
-	driver->sysctl_table[0].proc_handler = proc_dointvec;
-	driver->sysctl_table[1].procname = "ioctl_ret";
-	driver->sysctl_table[1].data = &driver->ioctl_ret;
-	driver->sysctl_table[1].maxlen = sizeof(driver->ioctl_ret);
-	driver->sysctl_table[1].mode = 0440;
-	driver->sysctl_table[1].proc_handler = proc_dointvec;
-
-	driver->sysctl_header = register_sysctl(tmp_dir_path,
-						driver->sysctl_table);
-	if (driver->sysctl_header == NULL) {
-		ret = -ENOENT;
-		goto exit_free_tmp_dir_path;
-	}
+	driver->sysctl_header = register_sysctl_table(
+					&driver->sysctl_table[0]);
+	if (IS_ERR(driver->sysctl_header))
+		driver->sysctl_header = NULL;
 
 	spin_lock_irqsave(&pt_internal_data.sl, flags);
 	list_add(&driver->list,  &pt_internal_data.driver_list);
 	spin_unlock_irqrestore(&pt_internal_data.sl, flags);
 
-	kfree(tmp_dir_path);
 	return driver;
-
-exit_free_tmp_dir_path:
-	kfree(tmp_dir_path);
-exit_free_driver:
-	kfree(driver);
-	return ERR_PTR(ret);
 }
 
 int pt_driver_unregister(struct pt_driver *driver)
@@ -997,7 +945,7 @@ int pt_driver_unregister(struct pt_driver *driver)
 	else
 		list_del(&driver->list);
 	spin_unlock_irqrestore(&pt_internal_data.sl, flags);
-	if (ret == 0)
+	if ((ret == 0) && (driver->sysctl_header))
 		unregister_sysctl_table(driver->sysctl_header);
 	if (ret == 0)
 		kfree(driver);
@@ -1154,7 +1102,7 @@ static void pt_testfct(const char *name)
 
 }
 
-static int pt_sysctl_command(const struct ctl_table *ctl, int write,
+static int pt_sysctl_command(struct ctl_table *ctl, int write,
 		void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;
@@ -1288,23 +1236,30 @@ static int __init pt_init(void)
 	INIT_LIST_HEAD(&pt_internal_data.resize_list);
 	init_waitqueue_head(&pt_internal_data.resize_wq);
 	sysctl_table = &pt_internal_data.sysctl_table[0];
-	sysctl_table[0].procname = "command";
-	sysctl_table[0].data = &pt_internal_data.sysctl_command[0];
-	sysctl_table[0].maxlen = sizeof(pt_internal_data.sysctl_command);
-	sysctl_table[0].mode = 0200;
-	sysctl_table[0].proc_handler = pt_sysctl_command;
-	sysctl_table[1].procname = "enabled";
-	sysctl_table[1].data = &pt_internal_data.enabled;
-	sysctl_table[1].maxlen = sizeof(pt_internal_data.enabled);
-	sysctl_table[1].mode = 0440;
-	sysctl_table[1].proc_handler = proc_dointvec;
-	sysctl_table[2].procname = "size";
-	sysctl_table[2].data = &pt_internal_data.size;
-	sysctl_table[2].maxlen = sizeof(pt_internal_data.size);
-	sysctl_table[2].mode = 0440;
-	sysctl_table[2].proc_handler = proc_dointvec;
-	pt_internal_data.sysctl_header = register_sysctl("/dev/pt",
-							 pt_internal_data.sysctl_table);
+	sysctl_table[0].procname = "dev";
+	sysctl_table[0].mode = 0550;
+	sysctl_table[0].child = &sysctl_table[2];
+	sysctl_table[2].procname = "pt";
+	sysctl_table[2].mode = 0550;
+	sysctl_table[2].child = &sysctl_table[4];
+	sysctl_table[4].procname = "command";
+	sysctl_table[4].data = &pt_internal_data.sysctl_command[0];
+	sysctl_table[4].maxlen = sizeof(pt_internal_data.sysctl_command);
+	sysctl_table[4].mode = 0200;
+	sysctl_table[4].proc_handler = pt_sysctl_command;
+	sysctl_table[5].procname = "enabled";
+	sysctl_table[5].data = &pt_internal_data.enabled;
+	sysctl_table[5].maxlen = sizeof(pt_internal_data.enabled);
+	sysctl_table[5].mode = 0440;
+	sysctl_table[5].proc_handler = proc_dointvec;
+	sysctl_table[6].procname = "size";
+	sysctl_table[6].data = &pt_internal_data.size;
+	sysctl_table[6].maxlen = sizeof(pt_internal_data.size);
+	sysctl_table[6].mode = 0440;
+	sysctl_table[6].proc_handler = proc_dointvec;
+	pt_internal_data.sysctl_header = register_sysctl_table(sysctl_table);
+	if (IS_ERR(pt_internal_data.sysctl_header))
+		pt_internal_data.sysctl_header = NULL;
 	pt_internal_data.resize_thread = kthread_run(pt_resize_thread, NULL,
 							"PT_resize");
 	return 0;
@@ -1312,7 +1267,8 @@ static int __init pt_init(void)
 
 static void __exit pt_exit(void)
 {
-	unregister_sysctl_table(pt_internal_data.sysctl_header);
+	if (pt_internal_data.sysctl_header)
+		unregister_sysctl_table(pt_internal_data.sysctl_header);
 	// TODO: wait for client unregister
 }
 

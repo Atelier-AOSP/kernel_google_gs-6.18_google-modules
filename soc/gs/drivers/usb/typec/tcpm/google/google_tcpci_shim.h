@@ -89,6 +89,7 @@
 #define TCPC_CC_STATUS_TERM_RP		0
 #define TCPC_CC_STATUS_TERM_RD		1
 #define TCPC_CC_STATE_SRC_OPEN		0
+#define TCPC_CC_STATE_SRC_RA		1
 #define TCPC_CC_STATUS_CC2_SHIFT	2
 #define TCPC_CC_STATUS_CC2_MASK		0x3
 #define TCPC_CC_STATUS_CC1_SHIFT	0
@@ -169,6 +170,11 @@
 /* I2C_WRITE_BYTE_COUNT + 1 when TX_BUF_BYTE_x is only accessible I2C_WRITE_BYTE_COUNT */
 #define TCPC_TRANSMIT_BUFFER_MAX_LEN		31
 
+#define tcpc_presenting_rd(REGVAL, CCNUM) \
+	(!(TCPC_ROLE_CTRL_DRP & (REGVAL)) && \
+	 (((REGVAL) & (TCPC_ROLE_CTRL_## CCNUM ##_MASK << TCPC_ROLE_CTRL_## CCNUM ##_SHIFT)) == \
+	  (TCPC_ROLE_CTRL_CC_RD << TCPC_ROLE_CTRL_## CCNUM ##_SHIFT)))
+
 struct google_shim_tcpci {
 	struct device *dev;
 	struct tcpm_port *port;
@@ -226,6 +232,8 @@ struct google_shim_tcpci_data {
 	void (*check_contaminant)(struct google_shim_tcpci *tcpci,
 				  struct google_shim_tcpci_data *data);
 	int (*get_vbus)(struct google_shim_tcpci *tcpci, struct google_shim_tcpci_data *data);
+	bool (*is_vbus_vsafe0v)(struct google_shim_tcpci *tcpci,
+				struct google_shim_tcpci_data *data);
 };
 
 struct google_shim_tcpci *google_tcpci_shim_register_port(struct device *dev,
@@ -235,4 +243,21 @@ irqreturn_t google_tcpci_shim_irq(struct google_shim_tcpci *tcpci);
 
 struct tcpm_port;
 struct tcpm_port *google_tcpci_shim_get_tcpm_port(struct google_shim_tcpci *tcpci);
+
+static inline enum typec_cc_status tcpci_to_typec_cc(unsigned int cc, bool sink)
+{
+	switch (cc) {
+	case 0x1:
+		return sink ? TYPEC_CC_RP_DEF : TYPEC_CC_RA;
+	case 0x2:
+		return sink ? TYPEC_CC_RP_1_5 : TYPEC_CC_RD;
+	case 0x3:
+		if (sink)
+			return TYPEC_CC_RP_3_0;
+		fallthrough;
+	case 0x0:
+	default:
+		return TYPEC_CC_OPEN;
+	}
+}
 #endif /* __GOOGLE_TCPCI_SHIM_H */

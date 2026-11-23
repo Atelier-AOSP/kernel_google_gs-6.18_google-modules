@@ -625,7 +625,7 @@ static int fusb307b_setup_data_notifier(struct fusb307b_plat *chip)
 				       EXTCON_PROP_USB_TYPEC_POLARITY);
 
 	of_property_read_u32(dev_of_node(chip->dev), "conn", &conn_handle);
-	desc.fwnode = of_fwnode_handle(of_find_node_by_phandle(conn_handle));
+	desc.fwnode = &of_find_node_by_phandle(conn_handle)->fwnode;
 	desc.driver_data = chip;
 	desc.name = fwnode_get_name(dev_fwnode(chip->dev));
 	desc.set = fusb307b_usb_set_role;
@@ -662,12 +662,13 @@ static void fusb307b_teardown_data_notifier(struct fusb307b_plat *chip)
 		usb_role_switch_unregister(chip->usb_sw);
 }
 
-static int fusb307b_probe(struct i2c_client *client)
+static int fusb307b_probe(struct i2c_client *client,
+			  const struct i2c_device_id *i2c_id)
 {
 	int ret;
 	struct fusb307b_plat *chip;
 	struct device_node *dn;
-	const char *usb_psy_name;
+	char *usb_psy_name;
 	u32 handle;
 
 	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
@@ -726,7 +727,7 @@ static int fusb307b_probe(struct i2c_client *client)
 	} else {
 		dev_err(&client->dev, "ls device node not found\n");
 		ret = -EINVAL;
-		goto unreg_of_nodes;
+		goto unreg_log;
 	}
 
 	chip->psy_ops.tcpc_get_vbus_voltage_mv =
@@ -743,7 +744,7 @@ static int fusb307b_probe(struct i2c_client *client)
 	if (IS_ERR_OR_NULL(chip->usb_psy_data)) {
 		dev_err(&client->dev, "USB psy failed to initialize");
 		ret = PTR_ERR(chip->usb_psy_data);
-		goto unreg_of_nodes;
+		goto unreg_log;
 	}
 
 	chip->data.set_vbus = fusb307_set_vbus;
@@ -757,7 +758,7 @@ static int fusb307b_probe(struct i2c_client *client)
 		goto unreg_psy;
 	}
 
-	usb_psy_name = of_get_property(dn, "usb-psy-name", NULL);
+	usb_psy_name = (char *)of_get_property(dn, "usb-psy-name", NULL);
 	if (!usb_psy_name) {
 		dev_err(&client->dev, "usb-psy-name not set\n");
 		ret = -EINVAL;
@@ -777,7 +778,7 @@ static int fusb307b_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto psy_put;
 
-	chip->wq = kthread_run_worker(0, "wq-tcpm-tcpc");
+	chip->wq = kthread_create_worker(0, "wq-tcpm-tcpc");
 	if (IS_ERR_OR_NULL(chip->wq)) {
 		ret = PTR_ERR(chip->wq);
 		goto teardown_data;
@@ -813,9 +814,6 @@ psy_put:
 	power_supply_put(chip->usb_psy);
 unreg_psy:
 	usb_psy_teardown(chip->usb_psy_data);
-unreg_of_nodes:
-	of_node_put(chip->ls_device_node);
-	of_node_put(chip->uic_device_node);
 unreg_log:
 	logbuffer_unregister(chip->log);
 
@@ -833,9 +831,6 @@ static void fusb307b_remove(struct i2c_client *client)
 	kthread_destroy_worker(chip->wq);
 	power_supply_unreg_notifier(&chip->psy_notifier);
 	fusb307b_teardown_data_notifier(chip);
-
-	of_node_put(chip->ls_device_node);
-	of_node_put(chip->uic_device_node);
 }
 
 static void fusb307b_shutdown(struct i2c_client *client)

@@ -123,7 +123,6 @@ struct samsung_pin_bank_type {
  * @eint_mask: bit mask of pins which support EINT function.
  * @eint_offset: SoC-specific EINT register or interrupt offset of bank.
  * @fltcon_offset: SoC-specific EINT filter control register offset of bank.
- * @wake_mask_bit_offset: SoC-specific wake mask bit offset of bank.
  * @name: name to be prefixed for each pin in this pin bank.
  */
 struct samsung_pin_bank_data {
@@ -137,7 +136,6 @@ struct samsung_pin_bank_data {
 	u32		eint_offset;
 	u32		eint_num;
 	u32		fltcon_offset;
-	u8		wake_mask_bit_offset;
 	const char	*name;
 };
 
@@ -153,11 +151,10 @@ struct samsung_pin_bank_data {
  * @eint_mask: bit mask of pins which support EINT function.
  * @eint_offset: SoC-specific EINT register or interrupt offset of bank.
  * @fltcon_offset: SoC-specific EINT filter control register offset of bank.
- * @wake_mask_bit_offset: SoC-specific offset of wake-mask bits of bank.
  * @name: name to be prefixed for each pin in this pin bank.
  * @pin_base: starting pin number of the bank.
  * @soc_priv: per-bank private data for SoC-specific code.
- * @fwnode: firmware device node
+ * @of_node: OF node of the bank.
  * @drvdata: link to controller driver data
  * @irq_domain: IRQ domain of the bank.
  * @gpio_chip: GPIO chip of the bank.
@@ -178,13 +175,12 @@ struct samsung_pin_bank {
 	u32		eint_offset;
 	u32		eint_num;
 	u32		fltcon_offset;
-	u8		wake_mask_bit_offset;
 	unsigned long	eint_disabled;
 	const char	*name;
 
 	u32		pin_base;
 	void		*soc_priv;
-	struct fwnode_handle *fwnode;
+	struct device_node *of_node;
 	struct samsung_pinctrl_drv_data *drvdata;
 	struct irq_domain *irq_domain;
 	struct gpio_chip gpio_chip;
@@ -361,6 +357,8 @@ extern const struct samsung_pinctrl_of_match_data exynos7_of_data;
 extern const struct samsung_pinctrl_of_match_data exynos850_of_data;
 extern const struct samsung_pinctrl_of_match_data gs101_of_data;
 extern const struct samsung_pinctrl_of_match_data gs201_of_data;
+extern const struct samsung_pinctrl_of_match_data zuma_of_data;
+extern const struct samsung_pinctrl_of_match_data zumapro_of_data;
 extern const struct samsung_pinctrl_of_match_data s3c64xx_of_data;
 extern const struct samsung_pinctrl_of_match_data s3c2412_of_data;
 extern const struct samsung_pinctrl_of_match_data s3c2416_of_data;

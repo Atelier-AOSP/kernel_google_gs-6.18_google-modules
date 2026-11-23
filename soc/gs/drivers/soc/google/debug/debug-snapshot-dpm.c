@@ -4,7 +4,6 @@
  *		http://www.samsung.com
  */
 
-#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/version.h>
 #include <linux/io.h>
@@ -18,10 +17,6 @@
 
 #include <asm/stacktrace.h>
 
-#ifdef CONFIG_DEBUG_SNAPSHOT_VENDOR_HOOKS
-#include <trace/hooks/fault.h>
-#include <trace/hooks/traps.h>
-#endif
 #include <soc/google/debug-snapshot.h>
 #include "debug-snapshot-local.h"
 
@@ -49,9 +44,9 @@ bool dbg_snapshot_get_enabled_debug_kinfo(void)
 }
 EXPORT_SYMBOL(dbg_snapshot_get_enabled_debug_kinfo);
 
-#ifdef CONFIG_DEBUG_SNAPSHOT_VENDOR_HOOKS
-static void dbg_snapshot_do_dpm(struct pt_regs *regs, unsigned int esr)
+void dbg_snapshot_do_dpm(struct pt_regs *regs)
 {
+	unsigned int esr = read_sysreg(esr_el1);
 	unsigned int val = 0;
 	unsigned int policy = GO_DEFAULT_ID;
 
@@ -106,105 +101,16 @@ static void dbg_snapshot_do_dpm(struct pt_regs *regs, unsigned int esr)
 		dbg_snapshot_do_dpm_policy(policy, dpm_policy[policy]);
 	}
 }
-
-/* trace/hooks/fault.h */
-static void dbg_snapshot_do_dpm_die_kernel_fault(void *data, const char *msg,
-						 unsigned long addr,
-						 unsigned int esr,
-						 struct pt_regs *regs)
-{
-	dbg_snapshot_do_dpm(regs, esr);
-}
-
-static void dbg_snapshot_do_dpm_do_sea(void *data, unsigned long addr,
-				       unsigned int esr, struct pt_regs *regs)
-{
-	dbg_snapshot_do_dpm(regs, esr);
-}
-
-static void dbg_snapshot_do_dpm_do_mem_abort(void *data, unsigned long addr,
-					     unsigned int esr,
-					     struct pt_regs *regs)
-{
-	dbg_snapshot_do_dpm(regs, esr);
-}
-
-static void dbg_snapshot_do_dpm_do_sp_pc_abort(void *data, unsigned long addr,
-					       unsigned int esr,
-					       struct pt_regs *regs)
-{
-	dbg_snapshot_do_dpm(regs, esr);
-}
-
-/* trace/hooks/traps.h */
-static void dbg_snapshot_do_dpm_do_undefinstr(void *data, struct pt_regs *regs)
-{
-	unsigned int esr = read_sysreg(esr_el1);
-
-	dbg_snapshot_do_dpm(regs, esr);
-}
-
-static void dbg_snapshot_do_dpm_do_serror(void *data, struct pt_regs *regs, unsigned int esr)
-{
-	dbg_snapshot_do_dpm(regs, esr);
-}
-
-static void register_dbg_snapshot_do_dpm_vendor_hooks(void)
-{
-	static bool hook_registered;
-
-	if (hook_registered)
-		return;
-
-	/* trace/hooks/fault.h */
-	if (register_trace_android_rvh_die_kernel_fault(dbg_snapshot_do_dpm_die_kernel_fault
-						       , NULL)) {
-		pr_err("dpm: register die_kernel_fault hook failed\n");
-		return;
-	}
-
-	if (register_trace_android_rvh_do_sea(dbg_snapshot_do_dpm_do_sea, NULL)) {
-		pr_err("dpm: register do_sea hook failed\n");
-		return;
-	}
-
-	if (register_trace_android_rvh_do_mem_abort(dbg_snapshot_do_dpm_do_mem_abort, NULL)) {
-		pr_err("dpm: register do_mem_abort hook failed\n");
-		return;
-	}
-
-	if (register_trace_android_rvh_do_sp_pc_abort(dbg_snapshot_do_dpm_do_sp_pc_abort, NULL)) {
-		pr_err("dpm: register do_sp_pc_abort hook failed\n");
-		return;
-	}
-
-	/* trace/hooks/traps.h */
-	if (register_trace_android_rvh_do_undefinstr(dbg_snapshot_do_dpm_do_undefinstr, NULL)) {
-		pr_err("dpm: register do_undefinstr failed\n");
-		return;
-	}
-
-	if (register_trace_android_rvh_arm64_serror_panic(dbg_snapshot_do_dpm_do_serror, NULL)) {
-		pr_err("dpm: register arm64_serror_panic hook failed\n");
-		return;
-	}
-
-	hook_registered = true;
-}
-#endif /* CONFIG_DEBUG_SNAPSHOT_VENDOR_HOOKS */
+EXPORT_SYMBOL_GPL(dbg_snapshot_do_dpm);
 
 static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 {
-	struct device_node *item __free(device_node);
+	struct device_node *item;
 	unsigned int val;
-	struct property *prop;
-	const char *method;
 
 	dss_dpm.enabled_debug = false;
 	dss_dpm.dump_mode = NONE_DUMP;
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(node);
 	item = of_find_node_by_name(node, "dump-mode");
 	if (!item) {
 		pr_info("dpm: No such ramdump node, [dump-mode] disabled\n");
@@ -231,28 +137,13 @@ static void dbg_snapshot_dt_scan_dpm_feature(struct device_node *node)
 		pr_info("dpm: file-support of dump-mode is %sabled\n",
 			val ? "en" : "dis");
 	}
-	of_node_put(item);
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(node);
 	item = of_find_node_by_name(node, "event");
 	if (!item) {
 		pr_warn("dpm: No such methods of kernel event\n");
 		goto exit_dss;
 	}
 
-	of_property_for_each_string(item, "method", prop, method) {
-		if (!method) {
-			pr_warn("dpm: No such methods of kevents\n");
-			goto exit_dss;
-		}
-
-		dbg_snapshot_set_enable_log_item(method, true);
-	}
-	of_node_put(item);
-
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(node);
 	item = of_find_node_by_name(node, "debug-kinfo");
 	if (!item) {
 		pr_info("dpm: No such debug-kinfo node, [debug-kinfo] disabled\n");
@@ -272,11 +163,9 @@ exit_dss:
 
 static void dbg_snapshot_dt_scan_dpm_policy(struct device_node *node)
 {
-	struct device_node *item __free(device_node);
+	struct device_node *item;
 	unsigned int val;
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(node);
 	item = of_find_node_by_name(node, "exception");
 	if (!item) {
 		pr_info("dpm: No such exception node, nothing to [policy]\n");
@@ -359,29 +248,21 @@ int dbg_snapshot_dt_scan_dpm(void)
 	}
 
 	/* feature setting */
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(root);
 	next = of_find_node_by_name(root, DPM_F);
 	if (!next) {
 		pr_warn("dpm: No such features of debug policy\n");
 	} else {
 		pr_warn("dpm: found features of debug policy\n");
 		dbg_snapshot_dt_scan_dpm_feature(next);
-		of_node_put(next);
 	}
 
 	/* policy setting */
-	/*
-	 * root will be released due to of_node_put() in
-	 * of_find_node_by_name()
-	 */
 	next = of_find_node_by_name(root, DPM_P);
 	if (!next) {
 		pr_warn("dpm: No such policy of debug policy\n");
 	} else {
 		pr_warn("dpm: found policy of debug policy\n");
 		dbg_snapshot_dt_scan_dpm_policy(next);
-		of_node_put(next);
 	}
 
 	return 0;
@@ -394,8 +275,4 @@ void dbg_snapshot_init_dpm(void)
 
 	if (dbg_snapshot_get_dpm_none_dump_mode() > 0)
 		dss_dpm.dump_mode_none = 1;
-
-#ifdef CONFIG_DEBUG_SNAPSHOT_VENDOR_HOOKS
-	register_dbg_snapshot_do_dpm_vendor_hooks();
-#endif
 }

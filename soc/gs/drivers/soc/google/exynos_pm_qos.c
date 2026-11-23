@@ -46,9 +46,10 @@
 
 #include <linux/uaccess.h>
 #include <linux/export.h>
-#include <trace/events/clock.h>
+#include <trace/events/power.h>
 
 #include <soc/google/exynos_pm_qos.h>
+#include "cal-if/acpm_dvfs.h"
 
 # define plist_check_head(h)	do { } while (0)
 /**
@@ -494,12 +495,72 @@ static struct exynos_pm_qos_object bw_throughput_max_pm_qos = {
 	.name = "bw_throughput_max",
 };
 
+static BLOCKING_NOTIFIER_HEAD(dsu_throughput_notifier);
+static struct exynos_pm_qos_constraints dsu_tput_constraints = {
+        .list = PLIST_HEAD_INIT(dsu_tput_constraints.list),
+        .target_value = PM_QOS_DSU_THROUGHPUT_DEFAULT_VALUE,
+        .default_value = PM_QOS_DSU_THROUGHPUT_DEFAULT_VALUE,
+        .type = EXYNOS_PM_QOS_MAX,
+        .notifiers = &dsu_throughput_notifier,
+        .lock = __SPIN_LOCK_UNLOCKED(dsu_tput_constraints.lock),
+};
+
+static struct exynos_pm_qos_object dsu_throughput_pm_qos = {
+        .constraints = &dsu_tput_constraints,
+        .name = "dsu_throughput",
+};
+
+static BLOCKING_NOTIFIER_HEAD(dsu_throughput_max_notifier);
+static struct exynos_pm_qos_constraints dsu_tput_max_constraints = {
+        .list = PLIST_HEAD_INIT(dsu_tput_max_constraints.list),
+        .target_value = PM_QOS_DSU_THROUGHPUT_MAX_DEFAULT_VALUE,
+        .default_value = PM_QOS_DSU_THROUGHPUT_MAX_DEFAULT_VALUE,
+        .type = EXYNOS_PM_QOS_MIN,
+        .notifiers = &dsu_throughput_max_notifier,
+        .lock = __SPIN_LOCK_UNLOCKED(dsu_tput_max_constraints.lock),
+};
+
+static struct exynos_pm_qos_object dsu_throughput_max_pm_qos = {
+        .constraints = &dsu_tput_max_constraints,
+        .name = "dsu_throughput_max",
+};
+
+static BLOCKING_NOTIFIER_HEAD(bci_throughput_notifier);
+static struct exynos_pm_qos_constraints bci_tput_constraints = {
+        .list = PLIST_HEAD_INIT(bci_tput_constraints.list),
+        .target_value = PM_QOS_BCI_THROUGHPUT_DEFAULT_VALUE,
+        .default_value = PM_QOS_BCI_THROUGHPUT_DEFAULT_VALUE,
+        .type = EXYNOS_PM_QOS_MAX,
+        .notifiers = &bci_throughput_notifier,
+        .lock = __SPIN_LOCK_UNLOCKED(bci_tput_constraints.lock),
+};
+
+static struct exynos_pm_qos_object bci_throughput_pm_qos = {
+        .constraints = &bci_tput_constraints,
+        .name = "bci_throughput",
+};
+
+static BLOCKING_NOTIFIER_HEAD(bci_throughput_max_notifier);
+static struct exynos_pm_qos_constraints bci_tput_max_constraints = {
+        .list = PLIST_HEAD_INIT(bci_tput_max_constraints.list),
+        .target_value = PM_QOS_BCI_THROUGHPUT_MAX_DEFAULT_VALUE,
+        .default_value = PM_QOS_BCI_THROUGHPUT_MAX_DEFAULT_VALUE,
+        .type = EXYNOS_PM_QOS_MIN,
+        .notifiers = &bci_throughput_max_notifier,
+        .lock = __SPIN_LOCK_UNLOCKED(bci_tput_max_constraints.lock),
+};
+
+static struct exynos_pm_qos_object bci_throughput_max_pm_qos = {
+        .constraints = &bci_tput_max_constraints,
+        .name = "bci_throughput_max",
+};
+
 static BLOCKING_NOTIFIER_HEAD(tpu_freq_min_notifier);
 static struct exynos_pm_qos_constraints tpu_freq_min_constraints = {
 	.list = PLIST_HEAD_INIT(tpu_freq_min_constraints.list),
 	.target_value = 0,
 	.default_value = 0,
-	.type = EXYNOS_PM_QOS_MIN,
+	.type = EXYNOS_PM_QOS_MAX,
 	.notifiers = &tpu_freq_min_notifier,
 	.lock = __SPIN_LOCK_UNLOCKED(tpu_freq_min_constraints.lock),
 };
@@ -514,7 +575,7 @@ static struct exynos_pm_qos_constraints tpu_freq_max_constraints = {
 	.list = PLIST_HEAD_INIT(tpu_freq_max_constraints.list),
 	.target_value = INT_MAX,
 	.default_value = INT_MAX,
-	.type = EXYNOS_PM_QOS_MAX,
+	.type = EXYNOS_PM_QOS_MIN,
 	.notifiers = &tpu_freq_max_notifier,
 	.lock = __SPIN_LOCK_UNLOCKED(tpu_freq_max_constraints.lock),
 };
@@ -548,6 +609,10 @@ static struct exynos_pm_qos_object *exynos_pm_qos_array[] = {
 	&tnr_throughput_max_pm_qos,
 	&bw_throughput_pm_qos,
 	&bw_throughput_max_pm_qos,
+	&dsu_throughput_pm_qos,
+	&dsu_throughput_max_pm_qos,
+	&bci_throughput_pm_qos,
+	&bci_throughput_max_pm_qos,
 	&gpu_freq_min_pm_qos,
 	&gpu_freq_max_pm_qos,
 	&tpu_freq_min_pm_qos,
@@ -959,12 +1024,12 @@ void exynos_pm_qos_update_request_async(struct exynos_pm_qos_request *req,
 	if (!req)
 		return;
 
-	if (!async_vote_wq) {
+	if (!async_vote_wq || exynos_acpm_async_dvfs_enabled()) {
 		exynos_pm_qos_update_request(req, new_value);
 		return;
 	}
 
-	if (req->async_vote.target_freq != new_value) {
+	if (req->node.prio != new_value) {
 		req->async_vote.target_freq = new_value;
 		queue_work(async_vote_wq, &req->async_vote.work);
 	}

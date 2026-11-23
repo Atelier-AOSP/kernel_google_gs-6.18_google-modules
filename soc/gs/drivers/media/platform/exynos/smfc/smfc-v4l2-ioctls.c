@@ -7,6 +7,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/overflow.h>
 
 #include "smfc.h"
 
@@ -238,6 +239,18 @@ const struct smfc_image_format smfc_image_formats[] = {
 		.num_buffers	= 3,
 		.chroma_hfactor	= 2,
 		.chroma_vfactor	= 2,
+	},
+	/*grayscale format*/
+	{
+		.description	= "GRAY 8BPP",
+		.v4l2_pixfmt	= V4L2_PIX_FMT_GREY,
+		.regcfg		= SMFC_IMGFMT_GRAY,
+		.bpp_buf	= {8},
+		.bpp_pix	= {8},
+		.num_planes	= 1,
+		.num_buffers	= 1,
+		.chroma_hfactor	= 0,
+		.chroma_vfactor	= 0,
 	}
 };
 
@@ -469,9 +482,9 @@ err:
 	return hdlr->error;
 }
 
-static int smfc_v4l2_querycap(struct file *filp, void *priv, struct v4l2_capability *cap)
+static int smfc_v4l2_querycap(struct file *filp, void *fh, struct v4l2_capability *cap)
 {
-	struct smfc_dev *smfc = v4l2_file_to_smfc_ctx(filp)->smfc;
+	struct smfc_dev *smfc = v4l2_fh_to_smfc_ctx(fh)->smfc;
 
 	strncpy(cap->driver, MODULE_NAME, sizeof(cap->driver));
 	strncpy(cap->bus_info, dev_name(smfc->dev), sizeof(cap->bus_info));
@@ -488,7 +501,7 @@ static int smfc_v4l2_querycap(struct file *filp, void *priv, struct v4l2_capabil
 	return 0;
 }
 
-static int smfc_v4l2_enum_fmt(struct file *filp, void *priv, struct v4l2_fmtdesc *f)
+static int smfc_v4l2_enum_fmt(struct file *filp, void *fh, struct v4l2_fmtdesc *f)
 {
 	const struct smfc_image_format *fmt;
 
@@ -505,10 +518,10 @@ static int smfc_v4l2_enum_fmt(struct file *filp, void *priv, struct v4l2_fmtdesc
 	return 0;
 }
 
-static int smfc_v4l2_g_fmt_mplane(struct file *filp, void *priv,
+static int smfc_v4l2_g_fmt_mplane(struct file *filp, void *fh,
 				  struct v4l2_format *f)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 
 	f->fmt.pix_mp.width = ctx->width;
 	f->fmt.pix_mp.height = ctx->height;
@@ -538,9 +551,9 @@ static int smfc_v4l2_g_fmt_mplane(struct file *filp, void *priv,
 	return 0;
 }
 
-static int smfc_v4l2_g_fmt(struct file *filp, void *priv, struct v4l2_format *f)
+static int smfc_v4l2_g_fmt(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 
 	f->fmt.pix.width = ctx->width;
 	f->fmt.pix.height = ctx->height;
@@ -572,10 +585,7 @@ static bool __smfc_check_image_size(struct device *dev, __u32 type,
 				    const struct smfc_image_format *smfc_fmt,
 				    __u32 width, __u32 height)
 {
-	__u32 min_width = SMFC_MIN_WIDTH << smfc_fmt->chroma_hfactor;
-	__u32 min_height = SMFC_MIN_WIDTH << smfc_fmt->chroma_vfactor;
-
-	if (width < min_width || height < min_height) {
+	if (width < SMFC_MIN_WIDTH || height < SMFC_MIN_HEIGHT) {
 		dev_warn(dev, "Too small image size(%ux%u) for '%s'\n",
 			 width, height, buf_type_name(type));
 		return false;
@@ -585,6 +595,11 @@ static bool __smfc_check_image_size(struct device *dev, __u32 type,
 		dev_warn(dev, "Too large image size(%ux%u) for '%s'\n",
 			 width, height, buf_type_name(type));
 		return false;
+	}
+
+	/* grayscale does not require chroma hfactor & vfactor checks */
+	if (smfc_fmt->v4l2_pixfmt == V4L2_PIX_FMT_GREY) {
+		return true;
 	}
 
 	if ((width % smfc_fmt->chroma_hfactor) != 0 || (height % smfc_fmt->chroma_vfactor) != 0) {
@@ -642,10 +657,18 @@ static int smfc_calc_crop(struct smfc_ctx *ctx, struct v4l2_selection *s)
 	unsigned char bpp_pix = ctx->img_fmt->bpp_pix[0] / 8;
 	unsigned char chroma_hfactor = ctx->img_fmt->chroma_hfactor;
 	unsigned char chroma_vfactor = ctx->img_fmt->chroma_vfactor;
+	u32 frame_bytes = frame_width * ctx->height * bpp_pix;
 	unsigned int i;
 
 	ctx->crop.po[0] = (frame_width * top + left) * bpp_pix;
 	ctx->crop.so[0] = (frame_width - crop_width) * bpp_pix;
+
+	if (ctx->crop.po[0] >= frame_bytes) {
+		v4l2_err(&ctx->smfc->v4l2_dev,
+			"Computed crop offset %u exceeds frame size %u\n",
+			ctx->crop.po[0], frame_bytes);
+		return -EINVAL;
+	}
 
 	for (i = 1; i < ctx->img_fmt->num_planes; i++) {
 		ctx->crop.po[i] = frame_width * top / chroma_vfactor + left;
@@ -714,9 +737,9 @@ static bool smfc_v4l2_init_fmt_mplane(const struct smfc_ctx *ctx,
 	return true;
 }
 
-static int smfc_v4l2_try_fmt_mplane(struct file *filp, void *priv, struct v4l2_format *f)
+static int smfc_v4l2_try_fmt_mplane(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 	const struct smfc_image_format *smfc_fmt = smfc_find_format(ctx->smfc,
 								    f->fmt.pix_mp.pixelformat);
 
@@ -733,7 +756,7 @@ static int smfc_v4l2_prepare_s_fmt(struct smfc_ctx *ctx,
 	struct vb2_queue *othervq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, othertype);
 	u32 flags;
 
-	if (vb2_is_busy(thisvq)) {
+	if (thisvq->num_buffers > 0) {
 		dev_err(ctx->smfc->dev, "S_FMT after REQBUFS is not allowed\n");
 		return -EBUSY;
 	}
@@ -741,7 +764,7 @@ static int smfc_v4l2_prepare_s_fmt(struct smfc_ctx *ctx,
 	flags = smfc_config_ctxflag(ctx, SMFC_CTX_COMPRESS,
 				    is_jpeg(smfc_fmt) != V4L2_TYPE_IS_OUTPUT(type));
 
-	if (vb2_is_busy(othervq)) { /* REQBUFSed on other vq */
+	if (othervq->num_buffers > 0) { /* REQBUFSed on other vq */
 		if ((flags & SMFC_CTX_COMPRESS) != (ctx->flags & SMFC_CTX_COMPRESS)) {
 			dev_err(ctx->smfc->dev, "Changing mode is prohibited after reqbufs\n");
 			ctx->flags = flags;
@@ -761,9 +784,9 @@ static __u32 v4l2_to_multiplane_type(__u32 type)
 	return V4L2_TYPE_IS_MULTIPLANAR(type) ? type : type + 8;
 }
 
-static int smfc_v4l2_s_fmt_mplane(struct file *filp, void *priv, struct v4l2_format *f)
+static int smfc_v4l2_s_fmt_mplane(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 	const struct smfc_image_format *smfc_fmt = smfc_find_format(ctx->smfc,
 								    f->fmt.pix_mp.pixelformat);
 	int ret = smfc_v4l2_prepare_s_fmt(ctx, smfc_fmt, f->type);
@@ -840,18 +863,18 @@ static bool smfc_v4l2_init_fmt(const struct smfc_ctx *ctx,
 	return true;
 }
 
-static int smfc_v4l2_try_fmt(struct file *filp, void *priv, struct v4l2_format *f)
+static int smfc_v4l2_try_fmt(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 	const struct smfc_image_format *smfc_fmt = smfc_find_format(ctx->smfc,
 								    f->fmt.pix.pixelformat);
 
 	return smfc_v4l2_init_fmt(ctx, smfc_fmt, f->type, &f->fmt.pix) ? 0 : -EINVAL;
 }
 
-static int smfc_v4l2_s_fmt(struct file *filp, void *priv, struct v4l2_format *f)
+static int smfc_v4l2_s_fmt(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 	const struct smfc_image_format *smfc_fmt = smfc_find_format(ctx->smfc,
 								    f->fmt.pix.pixelformat);
 	int ret = smfc_v4l2_prepare_s_fmt(ctx, smfc_fmt, f->type);
@@ -881,11 +904,12 @@ static int smfc_v4l2_s_fmt(struct file *filp, void *priv, struct v4l2_format *f)
 	return 0;
 }
 
-static int smfc_v4l2_s_selection(struct file *filp, void *priv, struct v4l2_selection *s)
+static int smfc_v4l2_s_selection(struct file *file, void *fh, struct v4l2_selection *s)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(fh);
 	unsigned int i;
 	int ret = 0;
+	u32 sum_x, sum_y;
 
 	if (s->r.left < 0 || s->r.top < 0 || s->r.width < 16 || s->r.height < 16) {
 		v4l2_err(&ctx->smfc->v4l2_dev, "Invalid crop region (%d,%d):%dx%d\n",
@@ -893,9 +917,14 @@ static int smfc_v4l2_s_selection(struct file *filp, void *priv, struct v4l2_sele
 		return -EINVAL;
 	}
 
-	if ((s->r.left + s->r.width) > ctx->width || (s->r.top + s->r.height) > ctx->height) {
-		v4l2_err(&ctx->smfc->v4l2_dev, "Crop (%d,%d):%dx%d overflows the image %dx%d\n",
-			 s->r.left, s->r.top, s->r.width, s->r.height, ctx->width, ctx->height);
+
+	if (check_add_overflow((u32)s->r.left, s->r.width, &sum_x) ||
+			check_add_overflow((u32)s->r.top, s->r.height, &sum_y) ||
+			sum_x > ctx->width || sum_y > ctx->height) {
+		v4l2_err(&ctx->smfc->v4l2_dev,
+			"Crop (%d,%d):%ux%u exceeds the image size %ux%u\n",
+			s->r.left, s->r.top, s->r.width, s->r.height,
+			ctx->width, ctx->height);
 		return -EINVAL;
 	}
 
@@ -918,19 +947,19 @@ static int smfc_v4l2_s_selection(struct file *filp, void *priv, struct v4l2_sele
 	return ret;
 }
 
-static int v4l2_smfc_qbuf(struct file *filp, void *priv, struct v4l2_buffer *buf)
+static int v4l2_smfc_qbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 {
-	struct smfc_ctx *ctx = v4l2_file_to_smfc_ctx(filp);
+	struct smfc_ctx *ctx = v4l2_fh_to_smfc_ctx(file->private_data);
 	struct vb2_queue *vq;
 	unsigned int index;
 
 	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, buf->type);
 
-	if (vb2_get_num_buffers(vq) > SMFC_MAX_PLANES) {
+	if (vq->num_buffers > SMFC_MAX_PLANES) {
 		return -EINVAL;
 	}
 
-	for (index = 0; index < vb2_get_num_buffers(vq); index++) {
+	for (index = 0; index < vq->num_buffers; index++) {
 		struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vq->bufs[index]);
 		struct v4l2_m2m_buffer *mbuf = container_of(vbuf, typeof(*mbuf), vb);
 		struct vb2_smfc_buffer *sbuf = container_of(mbuf, typeof(*sbuf), mb);
@@ -941,7 +970,7 @@ static int v4l2_smfc_qbuf(struct file *filp, void *priv, struct v4l2_buffer *buf
 			sbuf->offset[index] = 0;
 	}
 
-	return v4l2_m2m_qbuf(filp, ctx->fh.m2m_ctx, buf);
+	return v4l2_m2m_qbuf(file, ctx->fh.m2m_ctx, buf);
 }
 
 const struct v4l2_ioctl_ops smfc_v4l2_ioctl_ops = {

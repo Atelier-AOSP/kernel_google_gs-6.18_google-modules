@@ -12,6 +12,14 @@ menuconfig DEBUG_SNAPSHOT
 	  This supports to reserve memory for h/w debug feature such as
 	  scan2dram, arraydump.
 
+config DEBUG_SNAPSHOT_NR_CPUS
+	int "NR CPUS for kevent"
+	range 1 16
+	default 8
+	depends on DEBUG_SNAPSHOT
+	help
+	  This sets the number of cores for the kevents logging data structure declaration.
+
 config DEBUG_SNAPSHOT_FREQ_DOMAIN_NUM
 	int "Number of freq logging domain type"
 	depends on DEBUG_SNAPSHOT
@@ -58,13 +66,6 @@ config DEBUG_SNAPSHOT_QUICKDUMP
 	  So we get important data such as dss logging and H/W raw data.
 	  If you access text symbol and stack data, you could get them.
 	  But in GKI, we can't access section symbol and stack symbol.
-
-config DEBUG_SNAPSHOT_VENDOR_HOOKS
-	bool "Debug Snapshot vendor hooks"
-	depends on DEBUG_SNAPSHOT
-	default n
-	help
-	  This config is used to enable/disable the debug snapshot vendor hooks.
 
 config DEBUG_SNAPSHOT_DEBUG_KINFO
 	tristate "Debug Kernel Information Support"
@@ -184,6 +185,12 @@ config GS_SJTAG
 	help
 	  This driver implements the driver to the AP & GSA SJTAG HW blocks
 	  in the GS SoC.
+
+config BOOKERCI
+	tristate "Booker-CI driver"
+	default n
+	help
+	  This is BOOKER-CI driver.
 
 config ETM2DRAM
 	tristate "ETM to DRAM driver"

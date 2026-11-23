@@ -23,6 +23,8 @@
 #include <linux/soc/samsung/exynos-smc.h>
 #include "debug-snapshot-local.h"
 
+#define DSS_VERSION	0x80000000
+
 struct dbg_snapshot_interface {
 	struct dbg_snapshot_log *info_event;
 };
@@ -319,7 +321,7 @@ void dbg_snapshot_output(void)
 	for (i = 0; i < ARRAY_SIZE(dss_items); i++) {
 		if (!dss_items[i].entry.enabled)
 			continue;
-		pr_info("%-16s: phys:0x%pa / virt:0x%pK / size:0x%zx / en:%d\n",
+		pr_info("%-16s: phys:%pa / virt:%pK / size:0x%zx / en:%d\n",
 				dss_items[i].name,
 				&dss_items[i].entry.paddr,
 				(void *) dss_items[i].entry.vaddr,
@@ -351,6 +353,15 @@ unsigned int dbg_snapshot_get_pre_slcdump_base(void)
 }
 EXPORT_SYMBOL_GPL(dbg_snapshot_get_pre_slcdump_base);
 
+unsigned int dbg_snapshot_get_max_core_num(void)
+{
+	if (nr_cpu_ids > DSS_NR_CPUS)
+		pr_err("unexpected nr_cpu_ids(%u) or DSS_NR_CPUS (%u)\n", nr_cpu_ids, DSS_NR_CPUS);
+
+	return min(nr_cpu_ids, (unsigned int)DSS_NR_CPUS);
+}
+EXPORT_SYMBOL_GPL(dbg_snapshot_get_max_core_num);
+
 static void dbg_snapshot_init_desc(struct device *dev)
 {
 	/* initialize dss_desc */
@@ -380,8 +391,8 @@ static void dbg_snapshot_fixmap(void)
 
 		if (i == DSS_ITEM_HEADER_ID) {
 			/*  initialize kernel event to 0 except only header */
-			memset((void *)(vaddr + DSS_KEEP_HEADER_SZ), 0,
-					size - DSS_KEEP_HEADER_SZ);
+			memset((void *)(vaddr + DSS_HDR_INFO_BLOCK_KEEP_SZ), 0,
+					size - DSS_HDR_INFO_BLOCK_KEEP_SZ);
 		} else {
 			/*  initialized log to 0 if persist == false */
 			if (!dss_items[i].persist)
@@ -442,17 +453,14 @@ static int dbg_snapshot_rmem_setup(struct device *dev)
 		if (!en) {
 			dev_err(dev, "%s item is disabled, Skip alloc reserved memory\n",
 					rmem_np->name);
-			of_node_put(rmem_np);
 			continue;
 		}
 
 		rmem = of_reserved_mem_lookup(rmem_np);
 		if (!rmem) {
 			dev_err(dev, "no such reserved mem of node name %s\n", rmem_np->name);
-			of_node_put(rmem_np);
 			continue;
 		}
-		of_node_put(rmem_np);
 
 		dbg_snapshot_set_item_enable(rmem->name, en);
 		item = dbg_snapshot_get_item(rmem->name);
@@ -493,10 +501,23 @@ static int dbg_snapshot_rmem_setup(struct device *dev)
 			dss_base = (struct dbg_snapshot_base *)dbg_snapshot_get_header_vaddr();
 			dss_base->vaddr = (size_t)vaddr;
 			dss_base->paddr = rmem->base;
+			dss_base->version = DSS_VERSION;
 			ess_base = dss_base;
 			rmem->priv = vaddr;
 		}
+		if (!dss_base) {
+			dev_err(dev, "Header memory region needs to be first!");
+			/* This has to be the first and only mapped entry. */
+			vunmap(vaddr);
+			return -EINVAL;
+		}
+
 		dss_base->size += rmem->size;
+	}
+
+	if (!dss_base) {
+		dev_err(dev, "No/Invalid header memory region found");
+		return -EINVAL;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(dss_items); i++) {
@@ -624,6 +645,8 @@ static int dbg_snapshot_probe(struct platform_device *pdev)
 
 	dbg_snapshot_init_utils();
 	dbg_snapshot_init_dpm();
+
+	dbg_snapshot_register_vh_log();
 
 	dbg_snapshot_set_slcdump_status();
 

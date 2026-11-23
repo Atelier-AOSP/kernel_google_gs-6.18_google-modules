@@ -25,7 +25,6 @@
 #include <linux/gpio.h>
 #include <linux/input.h>
 #include <linux/miscdevice.h>
-#include <linux/overflow.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/time.h>
@@ -34,7 +33,6 @@
 #include <linux/kthread.h>
 #include <linux/jhash.h>
 #include <linux/ctype.h>
-#include <uapi/linux/sched/types.h>
 
 /*
  * API includes
@@ -246,7 +244,7 @@ struct stmvl53l1_module_fn_t {
 	void *(*get)(void *object);
 
 	/* decrement reference counter and deallocate memory when zero */
-	void (*put)(void *object);
+	int (*put)(void *object);
 };
 
 /** i2c module interface*/
@@ -273,6 +271,11 @@ static void stmvl53l1_input_push_data(struct stmvl53l1_data *data);
  * Mutex to handle device id add/removal
  */
 static DEFINE_MUTEX(dev_table_mutex);
+
+/*
+ * Mutex to handle device open/release
+ */
+static DEFINE_MUTEX(dev_open_mutex);
 
 /**
  * in-used device LUT
@@ -776,9 +779,6 @@ static int stmvl53l1_stop(struct stmvl53l1_data *data)
 			__LINE__, rc);
 		rc = store_last_error(data, rc);
 	}
-	/* put device under reset */
-	/* do we ask explicit intr stop or just use stop */
-	reset_hold(data);
 
 	data->enable_sensor = 0;
 	if (data->poll_mode) {
@@ -1079,7 +1079,7 @@ static ssize_t roi_store(struct device *dev,
 		if (n_roi >= 0) {
 			if (n_roi)
 				memcpy(data->roi_cfg.UserRois, rois,
-				       array_size(n_roi, sizeof(rois[0])));
+						n_roi*sizeof(rois[0]));
 			data->roi_cfg.NumberOfRoi = n_roi;
 			dump_roi(dev, data->roi_cfg.UserRois,
 				 data->roi_cfg.NumberOfRoi);
@@ -2197,7 +2197,7 @@ static struct attribute *stmvl53l1_attributes[] = {
 };
 
 static ssize_t calibration_data_read(struct file *filp,
-	struct kobject *kobj, const struct bin_attribute *attr,
+	struct kobject *kobj, struct bin_attribute *attr,
 	char *buf, loff_t off, size_t count)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
@@ -2243,7 +2243,7 @@ error:
 }
 
 static ssize_t calibration_data_write(struct file *filp,
-	struct kobject *kobj, const struct bin_attribute *attr,
+	struct kobject *kobj, struct bin_attribute *attr,
 	char *buf, loff_t off, size_t count)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
@@ -2287,10 +2287,10 @@ error:
 	return rc;
 }
 
-static const BIN_ATTR_RW(calibration_data, sizeof(struct VL53L1_CalibrationData_t));
+static BIN_ATTR_RW(calibration_data, sizeof(struct VL53L1_CalibrationData_t));
 
 static ssize_t zone_calibration_data_read(struct file *filp,
-	struct kobject *kobj, const struct bin_attribute *attr,
+	struct kobject *kobj, struct bin_attribute *attr,
 	char *buf, loff_t off, size_t count)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
@@ -2336,7 +2336,7 @@ error:
 }
 
 static ssize_t zone_calibration_data_write(struct file *filp,
-	struct kobject *kobj, const struct bin_attribute *attr,
+	struct kobject *kobj, struct bin_attribute *attr,
 	char *buf, loff_t off, size_t count)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
@@ -2385,9 +2385,9 @@ error:
 	return rc;
 }
 
-static const BIN_ATTR_RW(zone_calibration_data, sizeof(stmvl531_zone_calibration_data_t));
+static BIN_ATTR_RW(zone_calibration_data, sizeof(stmvl531_zone_calibration_data_t));
 
-static const struct bin_attribute *stmvl53l1_bin_attributes[] = {
+static struct bin_attribute *stmvl53l1_bin_attributes[] = {
 	&bin_attr_calibration_data,
 	&bin_attr_zone_calibration_data,
 	NULL
@@ -2628,15 +2628,7 @@ static int sleep_for_data(struct stmvl53l1_data *data, pid_t pid,
 
 	add_wait_queue(&data->waiter_for_data, &wait);
 	while (!sleep_for_data_condition(data, pid, head)) {
-		/*
-		 * b/243120064: The 1st data will arrive over 300 ms if tuning parameter
-		 * is set and less than 100 ms without tuning. Hence, using a maximum 1000
-		 * ms for timeout is acceptable and sufficient to cover all use cases.
-		 */
-		if (wait_woken(&wait, TASK_KILLABLE, 1000) <= 0) {
-			rc = -ETIME;
-			break;
-		}
+		wait_woken(&wait, TASK_KILLABLE, MAX_SCHEDULE_TIMEOUT);
 		if (fatal_signal_pending(current)) {
 			rc = -ERESTARTSYS;
 			break;
@@ -3053,6 +3045,11 @@ static int ctrl_roi(struct stmvl53l1_data *data, void __user *p)
 		if (rc) {
 			dev_err(dev, "get %d roi fm user fail\n", roi_cnt);
 			rc = -EFAULT;
+			goto done;
+		}
+		/* revalidate roi_cnt in case it changed */
+		if (roi_cnt != rois.roi_cfg.NumberOfRoi) {
+			rc = -EINVAL;
 			goto done;
 		}
 		dump_roi(dev, data->roi_cfg.UserRois,
@@ -3540,39 +3537,56 @@ static int stmvl53l1_ioctl_handler(
 		void __user *p)
 {
 	int rc = 0;
+	struct i2c_data *i2c_data = (struct i2c_data *)data->client_object;
+	struct device *dev = &i2c_data->client->dev;
 
 	if (!data)
 		return -EINVAL;
 
 	switch (cmd) {
 	case VL53L1_IOCTL_POWER_UP:
+		dev_dbg(dev, "VL53L1_IOCTL_POWER_UP\n");
 		rc = ctrl_power_up(data);
 		break;
+
 	case VL53L1_IOCTL_POWER_DOWN:
+		dev_dbg(dev, "VL53L1_IOCTL_POWER_DOWN\n");
+		reset_hold(data);
 		rc = ctrl_power_down(data);
 		break;
+
 	case VL53L1_IOCTL_START:
+		dev_dbg(dev, "VL53L1_IOCTL_START\n");
 		rc = ctrl_start(data);
 		break;
+
 	case VL53L1_IOCTL_STOP:
+		dev_dbg(dev, "VL53L1_IOCTL_STOP\n");
 		rc = ctrl_stop(data);
 		break;
+
 	case VL53L1_IOCTL_GETDATAS:
 		rc = ctrl_getdata(data, p);
 		break;
+
 	case VL53L1_IOCTL_GETDATAS_BLOCKING:
 		rc = ctrl_getdata_blocking(data, p);
 		break;
+
 	/* Register tool */
 	case VL53L1_IOCTL_REGISTER:
+		dev_dbg(dev, "VL53L1_IOCTL_REGISTER\n");
 		reset_release(data);
 		rc = ctrl_reg_access(data, p);
-		reset_hold(data);
 		break;
+
 	case VL53L1_IOCTL_PARAMETER:
+		dev_dbg(dev, "VL53L1_IOCTL_PARAMETER\n");
 		rc = ctrl_params(data, p);
 		break;
+
 	case VL53L1_IOCTL_ROI:
+		dev_dbg(dev, "VL53L1_IOCTL_ROI\n");
 		rc = ctrl_roi(data, p);
 		break;
 	case VL53L1_IOCTL_MZ_DATA:
@@ -3582,15 +3596,19 @@ static int stmvl53l1_ioctl_handler(
 		rc = ctrl_mz_data_blocking(data, p);
 		break;
 	case VL53L1_IOCTL_CALIBRATION_DATA:
+		dev_dbg(dev, "VL53L1_IOCTL_CALIBRATION_DATA\n");
 		rc = ctrl_calibration_data(data, p);
 		break;
 	case VL53L1_IOCTL_PERFORM_CALIBRATION:
+		dev_dbg(dev, "VL53L1_IOCTL_PERFORM_CALIBRATION\n");
 		rc = ctrl_perform_calibration(data, p);
 		break;
 	case VL53L1_IOCTL_AUTONOMOUS_CONFIG:
+		dev_dbg(dev, "VL53L1_IOCTL_AUTONOMOUS_CONFIG\n");
 		rc = ctrl_autonomous_config(data, p);
 		break;
 	case VL53L1_IOCTL_ZONE_CALIBRATION_DATA:
+		dev_dbg(dev, "VL53L1_IOCTL_ZONE_CALIBRATION_DATA\n");
 		rc = ctrl_zone_calibration_data(data, p);
 		break;
 	case VL53L1_IOCTL_MZ_DATA_ADDITIONAL:
@@ -3612,7 +3630,9 @@ static int stmvl53l1_open(struct inode *inode, struct file *file)
 	struct stmvl53l1_data *data = container_of(file->private_data,
 		struct stmvl53l1_data, miscdev);
 
+	mutex_lock(&dev_open_mutex);
 	stmvl53l1_module_func_tbl.get(data->client_object);
+	mutex_unlock(&dev_open_mutex);
 
 	return 0;
 }
@@ -3621,8 +3641,36 @@ static int stmvl53l1_release(struct inode *inode, struct file *file)
 {
 	struct stmvl53l1_data *data = container_of(file->private_data,
 		struct stmvl53l1_data, miscdev);
+	struct i2c_data *i2c_data = (struct i2c_data *)data->client_object;
+	struct device *dev = &i2c_data->client->dev;
+	int rc;
 
-	stmvl53l1_module_func_tbl.put(data->client_object);
+	mutex_lock(&dev_open_mutex);
+	/* Return 1 if the object was removed, otherwise return 0 after kref_put */
+	if (stmvl53l1_module_func_tbl.put(data->client_object)) {
+		mutex_unlock(&dev_open_mutex);
+		return 0;
+	}
+	/*
+	 * Kref count showing 1 after kref_put means that thers's no more reference
+	 * to this object. Add a check here to ensure sensor is stopped and powered
+	 * down properly.
+	 */
+	if (kref_read(&i2c_data->ref) == 1) {
+		if (data->enable_sensor) {
+			rc = ctrl_stop(data);
+			if (rc) {
+				dev_err(dev, "fail to stop sensor, rc %d\n", rc);
+			}
+		}
+		if (data->is_power_up) {
+			rc = ctrl_power_down(data);
+			if (rc) {
+				dev_err(dev, "fail to power down, rc %d\n", rc);
+			}
+		}
+	}
+	mutex_unlock(&dev_open_mutex);
 
 	return 0;
 }
@@ -4245,9 +4293,6 @@ int stmvl53l1_setup(struct stmvl53l1_data *data)
 	struct VL53L1_DeviceInfo_t dev_info;
 	struct i2c_data *i2c_data = data->client_object;
 	struct device *dev = &i2c_data->client->dev;
-	struct sched_param param = {0};
-	struct irq_desc *desc;
-	struct task_struct *irq_thread;
 
 	/* acquire an id */
 	data->id = allocate_dev_id();
@@ -4409,20 +4454,6 @@ int stmvl53l1_setup(struct stmvl53l1_data *data)
 
 	/* power down after probe done */
 	stmvl53l1_module_func_tbl.power_down(data->client_object);
-
-	/* adjust policy from SCHED_FIFO to SCHED_OTHER */
-	if (i2c_data->irq > 0) {
-		desc = irq_to_desc(i2c_data->irq);
-		if (desc == NULL) {
-			dev_warn(dev, "get a null irq desc");
-			return 0;
-		}
-		raw_spin_lock_irq(&desc->lock);
-		irq_thread = desc->action->thread;
-		raw_spin_unlock_irq(&desc->lock);
-		rc = sched_setscheduler_nocheck(irq_thread, SCHED_NORMAL, &param);
-		dev_info(dev, "VL53L1 setscheduler rc = %d", rc);
-	}
 
 	return 0;
 

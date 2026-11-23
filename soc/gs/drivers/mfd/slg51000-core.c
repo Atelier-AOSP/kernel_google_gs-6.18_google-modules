@@ -14,7 +14,6 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/slg51000.h>
 #include <linux/of_gpio.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/regmap.h>
 
 #define SLG51000_CHIP_ID_LEN            3
@@ -423,7 +422,7 @@ static void slg51000_timeout_work(struct work_struct *work)
 
 static void slg51000_timer_trigger(struct timer_list *t)
 {
-	struct slg51000_dev *slg51000 = timer_container_of(slg51000, t, timer);
+	struct slg51000_dev *slg51000 = from_timer(slg51000, t, timer);
 	schedule_work(&slg51000->timeout_work);
 }
 
@@ -554,7 +553,8 @@ static const struct regmap_config slg51000_regmap_config = {
 	.reg_write = slg51000_reg_write,
 };
 
-static int slg51000_i2c_probe(struct i2c_client *client)
+static int slg51000_i2c_probe(struct i2c_client *client,
+			      const struct i2c_device_id *id)
 {
 	struct slg51000_dev *slg51000;
 	int gpio, ret;
@@ -723,7 +723,7 @@ static int slg51000_i2c_probe(struct i2c_client *client)
 
 out:
 	mutex_destroy(&slg51000->pwr_lock);
-	timer_delete_sync(&slg51000->timer);
+	del_timer_sync(&slg51000->timer);
 	return ret;
 }
 
@@ -737,28 +737,28 @@ static void slg51000_i2c_remove(struct i2c_client *client)
 
 	mfd_remove_devices(slg51000->dev);
 	mutex_destroy(&slg51000->pwr_lock);
-	timer_delete_sync(&slg51000->timer);
+	del_timer_sync(&slg51000->timer);
 
 	if (gpio_is_valid(slg51000->chip_pu_pin)) {
 		desc = gpio_to_desc(slg51000->chip_pu_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		ret |= gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		usleep_range(1000, 1020);
 	}
 	if (gpio_is_valid(slg51000->chip_cs_pin)) {
 		desc = gpio_to_desc(slg51000->chip_cs_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		ret |= gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		/* Put SLG51000 back to Reset state */
 		usleep_range(SLEEP_10000_USEC,
 				SLEEP_10000_USEC + SLEEP_RANGE_USEC);
 	}
 	if (gpio_is_valid(slg51000->chip_buck_pin)) {
 		desc = gpio_to_desc(slg51000->chip_buck_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		ret |= gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		usleep_range(1000, 1020);
 	}
 	if (gpio_is_valid(slg51000->chip_bb_pin)) {
 		desc = gpio_to_desc(slg51000->chip_bb_pin);
-		ret |= gpiod_direction_output_raw(desc, 0);
+		ret |= gpiod_direction_output_raw(desc, GPIOF_INIT_LOW);
 		usleep_range(1000, 1020);
 	}
 

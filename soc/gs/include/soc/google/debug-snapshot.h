@@ -14,9 +14,13 @@
 #define DEBUG_SNAPSHOT_H
 
 #include <dt-bindings/soc/google/debug-snapshot-def.h>
+#include <asm/cputype.h>
 #include <asm/barrier.h>
 #if IS_ENABLED(CONFIG_DEBUG_SNAPSHOT)
 #include <linux/sched/clock.h>
+
+#define DSS_FREQ_MAX_SIZE		SZ_32
+#define DSS_FREQ_MAX_NAME_SIZE		SZ_8
 
 struct clk;
 struct clk_hw;
@@ -38,6 +42,7 @@ extern unsigned long dbg_snapshot_get_last_pc(unsigned int cpu);
 extern unsigned long dbg_snapshot_get_last_pc_paddr(void);
 extern unsigned int dbg_snapshot_get_slcdump_base(void);
 extern unsigned int dbg_snapshot_get_pre_slcdump_base(void);
+extern unsigned int dbg_snapshot_get_max_core_num(void);
 
 /* debug-snapshot-dpm functions */
 extern bool dbg_snapshot_get_dpm_status(void);
@@ -51,19 +56,23 @@ extern void dbg_snapshot_qd_dump_stack(u64 sp);
 extern int dbg_snapshot_get_sjtag_status(void);
 extern bool dbg_snapshot_get_reboot_status(void);
 extern bool dbg_snapshot_get_panic_status(void);
+extern void dbg_snapshot_set_core_cflush_stat(unsigned int val);
 extern bool dbg_snapshot_get_warm_status(void);
-extern void dbg_snapshot_ecc_dump(void);
+extern void dbg_snapshot_ecc_dump(bool call_panic);
 extern int dbg_snapshot_start_watchdog(int sec);
 extern int dbg_snapshot_emergency_reboot(const char *str);
 extern int dbg_snapshot_emergency_reboot_timeout(const char *str, int tick);
 extern int dbg_snapshot_kick_watchdog(void);
 extern unsigned int dbg_snapshot_get_val_offset(unsigned int offset);
 extern void dbg_snapshot_set_val_offset(unsigned int val, unsigned int offset);
-extern void dbg_snapshot_register_wdt_ops(void *start, void *expire, void *stop);
-extern void dbg_snapshot_register_debug_ops(void *halt, void *arraydump, void *scandump);
+extern void dbg_snapshot_register_wdt_ops(int (*start)(bool, int, int),
+					  int (*expire)(unsigned int, int), int (*stop)(int));
+extern void dbg_snapshot_register_debug_ops(int (*halt)(void), int (*arraydump)(void),
+					    int (*scandump)(void));
 extern void dbg_snapshot_save_context(struct pt_regs *regs, bool stack_dump);
 extern void cache_flush_all(void);
 extern int dbg_snapshot_stop_all_cpus(void);
+extern void dbg_snapshot_set_usb_otg(unsigned int val);
 extern void dbg_snapshot_set_core_pmu_val(unsigned int val, unsigned int cpu);
 extern unsigned int dbg_snapshot_get_core_pmu_val(unsigned int cpu);
 extern void dbg_snapshot_set_core_ehld_stat(unsigned int val, unsigned int cpu);
@@ -71,15 +80,13 @@ extern unsigned int dbg_snapshot_get_core_ehld_stat(unsigned int cpu);
 
 /* debug-snapshot-log functions */
 extern int dbg_snapshot_get_freq_idx(const char *name);
+extern void dbg_snapshot_get_freq_name(char (*freq_names)[DSS_FREQ_MAX_NAME_SIZE]);
+extern unsigned int dbg_snapshot_get_freq_size(void);
 extern void *dbg_snapshot_get_suspend_diag(void);
 
 #define dbg_snapshot_get_timestamp()	local_clock()
-extern void dbg_snapshot_task(int cpu, void *v_task);
-extern void dbg_snapshot_work(void *worker, void *v_task, work_func_t fn, int en);
 extern void dbg_snapshot_cpuidle(char *modes, unsigned int state, s64 diff, int en);
 extern void dbg_snapshot_cpuidle_mod(char *modes, unsigned int state, s64 diff, int en);
-extern void dbg_snapshot_irq(int irq, void *fn, void *val, unsigned long long time,
-				int en);
 extern void dbg_snapshot_clk(struct clk_hw *clock, const char *func_name,
 			    unsigned long arg, int mode);
 extern void dbg_snapshot_regulator(unsigned long long timestamp, char *f_name,
@@ -89,7 +96,6 @@ extern void dbg_snapshot_acpm(unsigned long long timestamp, const char *log,
 				unsigned int data);
 extern void dbg_snapshot_thermal(struct exynos_tmu_data *data, unsigned int temp,
 				char *name, unsigned long long max_cooling);
-extern void dbg_snapshot_hrtimer(void *timer, s64 *now, void *fn, int en);
 extern void dbg_snapshot_pmu(int id, const char *func_name, int mode);
 extern void dbg_snapshot_freq(int type, unsigned long old_freq,
 				unsigned long target_freq, int en);
@@ -154,7 +160,7 @@ static inline void dbg_snapshot_spin_func(void)
 
 #define dbg_snapshot_get_sjtag_status()		do { } while (0)
 #define dbg_snapshot_panic_handler_safe()	do { } while (0)
-#define dbg_snapshot_ecc_dump()			do { } while (0)
+#define dbg_snapshot_ecc_dump(a)		do { } while (0)
 #define dbg_snapshot_register_wdt_ops(a, b, c)	do { } while (0)
 #define dbg_snapshot_register_debug_ops(a, b, c)	do { } while (0)
 #define dbg_snapshot_save_context(a, b)		do { } while (0)
@@ -178,6 +184,7 @@ static inline void dbg_snapshot_spin_func(void)
 #define dbg_snapshot_get_last_pc_paddr		(0)
 #define dbg_snapshot_get_slcdump_base		(0)
 #define dbg_snapshot_get_pre_slcdump_base	(0)
+#define dbg_snapshot_get_max_core_num		(0)
 
 #define dbg_snapshot_get_dpm_status() 		(0)
 #define dbg_snapshot_qd_add_region(a, b)	(-1)
@@ -191,6 +198,8 @@ static inline void dbg_snapshot_spin_func(void)
 #define dbg_snapshot_stop_all_cpus()		(-1)
 
 #define dbg_snapshot_get_freq_idx(a)		(-1)
+#define dbg_snapshot_get_freq_name(a)		(0)
+#define dbg_snapshot_get_freq_size()		(0)
 
 #define dss_extern_get_log_by_cpu(item)					\
 static inline long dss_get_len_##item##_log(void) {			\
@@ -344,5 +353,30 @@ struct dbg_snapshot_helper_ops {
 	int (*run_arraydump)(void);
 	int (*run_scandump_mode)(void);
 };
+
+/**
+ * remain comment to check CPU nick name
+ *
+#define ARM_CPU_PART_HERCULES		ARM_CPU_PART_CORTEX_A78
+#define ARM_CPU_PART_HERA		ARM_CPU_PART_CORTEX_X1
+#define ARM_CPU_PART_KLEIN		ARM_CPU_PART_CORTEX_A510
+#define ARM_CPU_PART_MATTERHORN		ARM_CPU_PART_CORTEX_A710
+#define ARM_CPU_PART_MATTERHORN_ELP	ARM_CPU_PART_CORTEX_X2
+*/
+#define ARM_CPU_PART_MAKALU		0xD4D
+#define ARM_CPU_PART_MAKALU_ELP		0xD4E
+#define ARM_CPU_PART_HAYDEN		0xD80
+#define ARM_CPU_PART_HUNTER		0xD81
+#define ARM_CPU_PART_HUNTER_ELP		0xD82
+
+#define DSS_NR_CPUS_ZUMA		(9)
+#define DSS_NR_CPUS_OTHERS		(8)
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+// ZUMA and ZUMAPRO: max(DSS_NR_CPUS_ZUMA, DSS_NR_CPUS_OTHERS)
+#define DSS_NR_CPUS			DSS_NR_CPUS_ZUMA
+#else
+// GS101 and GS201
+#define DSS_NR_CPUS			DSS_NR_CPUS_OTHERS
+#endif
 
 #endif

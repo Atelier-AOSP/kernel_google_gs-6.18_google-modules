@@ -128,8 +128,9 @@ static int __mfc_qos_get_bps_section_by_bps(struct mfc_dev *dev, int Kbps)
 /* Return the minimum interval between previous and next entry */
 static int __mfc_qos_get_interval(struct list_head *head, struct list_head *entry)
 {
-	int prev_interval = MFC_MAX_INTERVAL, next_interval = MFC_MAX_INTERVAL;
+	unsigned long prev_interval = MFC_MAX_INTERVAL, next_interval = MFC_MAX_INTERVAL;
 	struct mfc_timestamp *prev_ts, *next_ts, *curr_ts;
+	int ret = 0;
 
 	curr_ts = list_entry(entry, struct mfc_timestamp, list);
 
@@ -137,15 +138,20 @@ static int __mfc_qos_get_interval(struct list_head *head, struct list_head *entr
 		prev_ts = list_entry(entry->prev, struct mfc_timestamp, list);
 		prev_interval = __mfc_qos_timespec64_diff(&curr_ts->timestamp,
 							&prev_ts->timestamp);
+		if (prev_interval > MFC_MAX_INTERVAL)
+			prev_interval = MFC_MAX_INTERVAL;
 	}
 
 	if (entry->next != head) {
 		next_ts = list_entry(entry->next, struct mfc_timestamp, list);
 		next_interval = __mfc_qos_timespec64_diff(&next_ts->timestamp,
 							&curr_ts->timestamp);
+		if (next_interval > MFC_MAX_INTERVAL)
+			next_interval = MFC_MAX_INTERVAL;
 	}
 
-	return (prev_interval < next_interval ? prev_interval : next_interval);
+	ret = (prev_interval < next_interval) ? prev_interval : next_interval;
+	return ret;
 }
 
 static int __mfc_qos_add_timestamp(struct mfc_ctx *ctx,
@@ -242,8 +248,16 @@ static unsigned long __mfc_qos_get_fps_by_timestamp(struct mfc_ctx *ctx, struct 
 	}
 
 	/* Calculation the last frame fps for drop control */
-	temp_ts = list_entry(head->prev, struct mfc_timestamp, list);
-	ctx->ts_last_interval = temp_ts->interval;
+	if (ctx->type == MFCINST_ENCODER) {
+		temp_ts = list_entry(head->prev, struct mfc_timestamp, list);
+		if (temp_ts->interval > USEC_PER_SEC) {
+			mfc_ctx_info("[TS] ts interval(%d) couldn't over 1sec(1fps)\n",
+					temp_ts->interval);
+			ctx->ts_last_interval = 0;
+		} else {
+			ctx->ts_last_interval = temp_ts->interval;
+		}
+	}
 
 	if (!ctx->ts_is_full) {
 		if (debug_ts == 1)

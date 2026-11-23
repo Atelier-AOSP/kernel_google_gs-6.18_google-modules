@@ -6,13 +6,20 @@
  * Copyright 2021 Google LLC
  */
 
+#include "linux/vm_event_item.h"
 #include <linux/mm.h>
 #include <linux/types.h>
 #include <linux/kobject.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/jiffies.h>
+#include <linux/pagemap.h>
+#include <linux/ktime.h>
+
 #include "../../vh/include/sched.h"
+
+#define CREATE_TRACE_POINTS
+#include "pixel_mm_trace.h"
 
 #define OOM_SCORE_ADJ_NATIVE -1
 #define OOM_SCORE_ADJ_TOP 0
@@ -55,10 +62,8 @@ void vh_direct_reclaim_begin(void *data, int order, gfp_t gfp_mask)
 {
 	struct vendor_task_struct *tsk;
 
-	task_lock(current);
 	tsk = get_vendor_task_struct(current);
 	tsk->direct_reclaim_ts = jiffies;
-	task_unlock(current);
 }
 
 void vh_direct_reclaim_end(void *data, unsigned long nr_reclaimed)
@@ -70,11 +75,9 @@ void vh_direct_reclaim_end(void *data, unsigned long nr_reclaimed)
 	struct vendor_task_struct *tsk;
 	unsigned long old_ts;
 
-	task_lock(current);
 	tsk = get_vendor_task_struct(current);
 	old_ts = tsk->direct_reclaim_ts;
 	oom_score_adj = current->signal->oom_score_adj;
-	task_unlock(current);
 
 	delta = jiffies_to_msecs(jiffies - old_ts);
 	WARN_ON_ONCE(delta < 0);
@@ -102,6 +105,49 @@ void vh_direct_reclaim_end(void *data, unsigned long nr_reclaimed)
 	stat->total_count++;
 	stat->total_time += delta;
 	spin_unlock(&stat->lock);
+}
+
+struct vendor_madvise_walk_private {
+	struct list_head ret_list;
+};
+
+void rvh_madvise_pageout_begin(void *data, void **private)
+{
+	struct vendor_madvise_walk_private *vendor_private;
+
+	vendor_private = kmalloc(sizeof(struct vendor_madvise_walk_private), GFP_KERNEL);
+	if (vendor_private)
+		INIT_LIST_HEAD(&vendor_private->ret_list);
+	*private = vendor_private;
+}
+
+void rvh_madvise_pageout_end(void *data, void *private, struct list_head *folio_list)
+{
+	struct vendor_madvise_walk_private *vendor_private = (struct vendor_madvise_walk_private *)private;
+
+	if (!vendor_private)
+		return;
+
+	while (!list_empty(&vendor_private->ret_list)) {
+		struct page *page;
+
+		page = lru_to_page(&vendor_private->ret_list);
+		wait_on_page_writeback(page);
+		list_move(&page->lru, folio_list);
+	}
+
+	kfree(vendor_private);
+}
+
+void rvh_reclaim_folio_list(void *data, struct list_head *folio_list, void *private)
+{
+	struct vendor_madvise_walk_private *vendor_private;
+
+	if (!private)
+		return;
+
+	 vendor_private = private;
+	 list_splice(folio_list, &vendor_private->ret_list);
 }
 
 #define DIRECT_RECLAIM_ATTR_RO(_name) \
@@ -256,4 +302,76 @@ err_direct_out:
 	kobject_put(pixel_vmscan_kobj);
 out:
 	return retval;
+}
+
+static struct kswapd_wake_data {
+	bool is_valid;
+	unsigned long total_pgalloc;
+	unsigned long pgscan_kswapd;
+	unsigned long pgsteal_kswapd;
+	u64 timestamp_ns;
+} kswapd_wake_data;
+
+static unsigned long total_pgalloc(unsigned long const *events)
+{
+	/*
+	 * The contents of this array is known at compile time, and the loop below
+	 * is simple - so there is a good chance the loop will be unrolled.
+	 */
+	enum vm_event_item indexes[] = { FOR_ALL_ZONES(PGALLOC) };
+
+	unsigned long total = 0;
+	for (int i = 0; i != ARRAY_SIZE(indexes); i++)
+		total += events[indexes[i]];
+
+	return total;
+}
+
+void rvh_vmscan_kswapd_wake(void *data, int node_id, unsigned int highest_zoneidx,
+			    unsigned int alloc_order)
+{
+	unsigned long events[NR_VM_EVENT_ITEMS];
+
+	if (!trace_pixel_mm_kswapd_wake_enabled())
+		return;
+
+	all_vm_events(events);
+	kswapd_wake_data.total_pgalloc = total_pgalloc(events);
+	kswapd_wake_data.pgscan_kswapd = events[PGSCAN_KSWAPD];
+	kswapd_wake_data.pgsteal_kswapd = events[PGSTEAL_KSWAPD];
+	kswapd_wake_data.timestamp_ns = ktime_get_ns();
+
+	kswapd_wake_data.is_valid = true;
+
+	trace_pixel_mm_kswapd_wake(0);
+}
+
+void rvh_vmscan_kswapd_done(void *data, int node_id, unsigned int highest_zoneidx,
+			    unsigned int alloc_order, unsigned int reclaim_order)
+{
+	unsigned long events[NR_VM_EVENT_ITEMS];
+	unsigned long delta_nr_scanned, delta_nr_reclaimed, delta_nr_allocated;
+	u64 duration_ns;
+
+	if (likely(!kswapd_wake_data.is_valid))
+		return;
+
+	/*
+	 * Reset is_valid regardless of whether kswapd_wake_data is used, to avoid
+	 * leaving stale wake data behind in case the tracing is turned off and on
+	 * between wake/done calls.
+	 */
+	kswapd_wake_data.is_valid = false;
+
+	if (!trace_pixel_mm_kswapd_done_enabled())
+		return;
+
+	all_vm_events(events);
+	delta_nr_scanned = events[PGSCAN_KSWAPD] - kswapd_wake_data.pgscan_kswapd;
+	delta_nr_reclaimed = events[PGSTEAL_KSWAPD] - kswapd_wake_data.pgsteal_kswapd;
+	delta_nr_allocated = total_pgalloc(events) - kswapd_wake_data.total_pgalloc;
+	duration_ns = ktime_get_ns() - kswapd_wake_data.timestamp_ns;
+
+	trace_pixel_mm_kswapd_done(delta_nr_scanned, delta_nr_reclaimed, delta_nr_allocated,
+				   duration_ns);
 }

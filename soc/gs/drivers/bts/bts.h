@@ -20,6 +20,7 @@
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/rtmutex.h>
 #include <dt-bindings/soc/google/gs-bts.h>
 #include <soc/google/exynos-pd.h>
 #include <soc/google/bts.h>
@@ -29,6 +30,12 @@
 #define MIF_UTIL 65
 #define INT_UTIL 65
 #define RT_UTIL 40
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+#define NOCL2A_NUM_CHANNEL 2
+#define INT_BUS_WIDTH 32
+#define URGENT_TIMEOUT_EPOCH 16
+#endif
 
 #define DEFAULT_QOS 0x4
 #define MAX_QOS 0xF
@@ -40,14 +47,30 @@ struct bts_scen;
 struct bts_stat;
 struct bts_info;
 
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+struct nocl_ip_info {
+	const char *ip_name;
+	u32 ip_bus_width;
+};
+struct nocl_info {
+	const char *nocl_name;
+	u32 num_ip;
+	u32 peak_freq;
+	struct nocl_ip_info *nocl_ips;
+	struct list_head list;
+};
+#endif
+
 /**
  * struct bts - Device BTS structure
  * @lock:	a spin-lock to protect accessing bts
  * @mutex_lock: mutex-lock to protect accessing setting DVFS
  *
- * @num_bts:	number of bts hardware
- * @num_scen:	number of scenario be used
- * @top_scen:	current top scenario
+ * @num_bts:		number of bts hardware
+ * @num_scen:		number of scenario be used
+ * @num_rts:		number of RT client
+ * @num_urgent_lat:	number of bts hardware support set urgent latency
+ * @top_scen:		current top scenario
  *
  * @bts_list:	struct bts_info * - start address pointer for BTS devices
  * @scen_list:  struct bts_scen * - start address pointer for BTS scenarios
@@ -68,12 +91,12 @@ struct bts_device {
 	/* bts spinlock */
 	spinlock_t lock;
 	/* mutex-lock to protect accessing setting DVFS */
-	struct mutex mutex_lock;
+	struct rt_mutex mutex_lock;
 
 	unsigned int num_bts;
 	unsigned int num_scen;
-	unsigned int top_scen;
 	unsigned int num_rts;
+	unsigned int top_scen;
 
 	struct bts_info *bts_list;
 	struct bts_scen *scen_list;
@@ -85,6 +108,13 @@ struct bts_device {
 	unsigned int total_bw;
 	struct bus1_int_map *bus1_int_tbl;
 	unsigned int map_row_cnt;
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	unsigned int num_nocl;
+	struct nocl_info *nocl_infos;
+	unsigned int num_urgent_lat;
+	struct bts_urgent_lat *urgent_lat_list;
+#endif
 };
 
 /**
@@ -137,6 +167,15 @@ struct bts_scen {
 	int usage_count;
 	const char *name;
 };
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+struct bts_urgent_lat {
+	unsigned int bts_index;
+	unsigned int lat_read;
+	unsigned int th_read;
+	const char *name;
+};
+#endif
 
 /**
  * struct bts_stat - BTS status

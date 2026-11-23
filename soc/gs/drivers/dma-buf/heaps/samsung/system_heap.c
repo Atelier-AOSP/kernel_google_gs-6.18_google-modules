@@ -22,10 +22,11 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/of.h>
+#include <soc/google/meminfo.h>
+
+#include <heaps/page_pool.h>
 
 #include "samsung-dma-heap.h"
-#include "../deferred-free-helper.h"
-#include "../page_pool.h"
 
 #define HIGH_ORDER_GFP  (((GFP_HIGHUSER | __GFP_ZERO | __GFP_NOWARN \
 				| __GFP_NORETRY) & ~__GFP_RECLAIM) \
@@ -37,18 +38,25 @@ static gfp_t order_flags[] = {HIGH_ORDER_GFP, HIGH_ORDER_GFP, HIGH_ORDER_GFP, LO
  * to match with the sizes often found in IOMMUs. Using high order pages instead
  * of order 0 pages can significantly improve the performance of many IOMMUs
  * by reducing TLB pressure and time spent updating page tables.
+ *
+ * Note: When the order is 0, the minimum allocation is PAGE_SIZE. The possible
+ * page sizes for ARM devices could be 4K, 16K and 64K.
  */
-static const unsigned int orders[] = {9, 8, 4, 0};
+#define ORDER_2M (21 - PAGE_SHIFT)
+#define ORDER_1M (20 - PAGE_SHIFT)
+#define ORDER_64K (16 - PAGE_SHIFT)
+#define ORDER_FOR_PAGE_SIZE (0)
+
+static const unsigned int orders[] = {ORDER_2M, ORDER_1M, ORDER_64K, ORDER_FOR_PAGE_SIZE};
 #define NUM_ORDERS ARRAY_SIZE(orders)
 struct dmabuf_page_pool *pools[NUM_ORDERS];
 
-unsigned long dma_heap_system_inuse_pages(void)
+static unsigned long dma_heap_system_inuse_pages(void)
 {
 	return atomic64_read(&inuse_pages);
 }
-EXPORT_SYMBOL_GPL(dma_heap_system_inuse_pages);
 
-unsigned long dma_heap_system_pool_pages(void)
+static unsigned long dma_heap_system_pool_pages(void)
 {
 	int i;
 	unsigned long pages = 0;
@@ -58,7 +66,6 @@ unsigned long dma_heap_system_pool_pages(void)
 
 	return pages;
 }
-EXPORT_SYMBOL_GPL(dma_heap_system_pool_pages);
 
 static struct page *alloc_largest_available(unsigned long size,
 					    unsigned int max_order)
@@ -109,7 +116,7 @@ static void free_dma_heap_page(struct page *page, bool discard)
 }
 
 static struct dma_buf *system_heap_allocate(struct dma_heap *heap, unsigned long len,
-					    u32 fd_flags, u64 heap_flags)
+					    unsigned long fd_flags, unsigned long heap_flags)
 {
 	struct samsung_dma_heap *samsung_dma_heap = dma_heap_get_drvdata(heap);
 	struct samsung_dma_buffer *buffer;
@@ -189,9 +196,27 @@ free_buffer:
 	return ERR_PTR(ret);
 }
 
+static long system_heap_get_pool_size(struct dma_heap *heap)
+{
+	/*
+	 * All system heaps share the same page pool. Return the size of the pool
+	 * only for *the* system heap (required by VTS). Otherwise, the heap pool
+	 * use will be overcalculated by the number of registered system heaps.
+	 */
+	if (strcmp(dma_heap_get_name(heap), "system"))
+		return 0;
+
+	return dma_heap_system_pool_pages() << PAGE_SHIFT;
+}
+
 static const struct dma_heap_ops system_heap_ops = {
 	.allocate = system_heap_allocate,
+	.get_pool_size = system_heap_get_pool_size,
 };
+
+static bool skip_deferred_free;
+module_param(skip_deferred_free, bool, 0644);
+MODULE_PARM_DESC(skip_deferred_free, "Skip deferred free and return pages to buddy allocator");
 
 static void system_heap_free(struct deferred_freelist_item *item, enum df_reason reason)
 {
@@ -211,7 +236,10 @@ static void system_heap_release(struct samsung_dma_buffer *buffer)
 {
 	int npages = PAGE_ALIGN(buffer->len) / PAGE_SIZE;
 
-	deferred_free(&buffer->deferred_free, system_heap_free, npages);
+	if (READ_ONCE(skip_deferred_free))
+		system_heap_free(&buffer->deferred_free, DF_UNDER_PRESSURE);
+	else
+		deferred_free(&buffer->deferred_free, system_heap_free, npages);
 }
 
 static int system_heap_probe(struct platform_device *pdev)
@@ -233,6 +261,29 @@ static struct platform_driver system_heap_driver = {
 	.probe		= system_heap_probe,
 };
 
+static unsigned long ion_heap_size(void *private)
+{
+	return (dma_heap_system_inuse_pages() + dma_heap_gcma_inuse_pages()) << (PAGE_SHIFT - 10);
+}
+
+static struct meminfo dma_heap_meminfo = {
+	.name = "ION_heap",
+	.size_kb = ion_heap_size,
+};
+
+static unsigned long ion_heap_pool_size(void *private)
+{
+	unsigned long pages;
+
+	pages = dma_heap_system_pool_pages();
+	return pages << (PAGE_SHIFT - 10);
+}
+
+static struct meminfo dma_heap_pool_meminfo = {
+	.name = "ION_heap_pool",
+	.size_kb = ion_heap_pool_size,
+};
+
 int __init system_dma_heap_init(void)
 {
 	int i;
@@ -248,6 +299,9 @@ int __init system_dma_heap_init(void)
 			return -ENOMEM;
 		}
 	}
+
+	register_meminfo(&dma_heap_meminfo);
+	register_meminfo(&dma_heap_pool_meminfo);
 
 	return platform_driver_register(&system_heap_driver);
 }

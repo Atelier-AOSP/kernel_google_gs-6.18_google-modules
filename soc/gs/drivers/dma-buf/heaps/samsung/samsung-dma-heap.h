@@ -22,7 +22,8 @@
 #include <linux/iommu.h>
 #include <linux/device.h>
 
-#include "../deferred-free-helper.h"
+/* This header is in ACK under drivers/dma-buf/heaps. */
+#include <heaps/deferred-free-helper.h>
 
 /* the number of pages that allocated from heaps and currently used */
 static atomic64_t inuse_pages = ATOMIC_INIT(0);
@@ -38,10 +39,6 @@ static inline void dma_heap_dec_inuse(unsigned long pages)
 
 	atomic64_sub(pages, &inuse_pages);
 }
-
-unsigned long dma_heap_inuse_pages(void);
-unsigned long dma_heap_pool_pages(void);
-
 
 struct samsung_dma_buffer {
 	struct samsung_dma_heap *heap;
@@ -64,6 +61,7 @@ struct samsung_dma_heap {
 	void (*release)(struct samsung_dma_buffer *buffer);
 	void *priv;
 	const char *name;
+	struct device_dma_parameters dma_parms;
 	unsigned long flags;
 	unsigned int alignment;
 	unsigned int protection_id;
@@ -85,8 +83,7 @@ void samsung_dma_buffer_free(struct samsung_dma_buffer *buffer);
 int samsung_heap_add(struct device *dev, void *priv,
 		     void (*release)(struct samsung_dma_buffer *buffer),
 		     const struct dma_heap_ops *ops);
-struct dma_buf *samsung_export_dmabuf(struct samsung_dma_buffer *buffer,
-				      u32 fd_flags);
+struct dma_buf *samsung_export_dmabuf(struct samsung_dma_buffer *buffer, unsigned long fd_flags);
 void samsung_track_buffer_destroyed(struct samsung_dma_buffer *buffer);
 
 #define DMA_HEAP_VIDEO_PADDING (512)
@@ -179,8 +176,6 @@ static inline int samsung_dma_buffer_unprotect(struct samsung_dma_buffer *buffer
 #if defined(CONFIG_DMABUF_HEAPS_SAMSUNG_SYSTEM)
 int __init system_dma_heap_init(void);
 void system_dma_heap_exit(void);
-unsigned long dma_heap_system_inuse_pages(void);
-unsigned long dma_heap_system_pool_pages(void);
 #else
 static inline int __init system_dma_heap_init(void)
 {
@@ -188,15 +183,6 @@ static inline int __init system_dma_heap_init(void)
 }
 
 #define system_dma_heap_exit() do { } while (0)
-
-static inline unsigned long dma_heap_system_inuse_pages(void)
-{
-	return 0;
-}
-static inline unsigned long dma_heap_system_pool_pages(void)
-{
-	return 0;
-}
 #endif
 
 #if defined(CONFIG_DMABUF_HEAPS_SAMSUNG_CMA)

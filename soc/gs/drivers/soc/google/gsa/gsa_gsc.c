@@ -283,6 +283,7 @@ static const struct file_operations gsc_fops = {
 	.poll		= gsc_poll,
 	.release	= gsc_release,
 	.unlocked_ioctl	= gsc_ioctl,
+	.llseek		= no_llseek,
 	.owner		= THIS_MODULE,
 };
 
@@ -373,16 +374,14 @@ static int gsa_gsc_probe(struct platform_device *pdev)
 	}
 	s->ctdl_ap_irq = ret;
 
-	ret = devm_gpio_request_one(dev, s->ctdl_ap_irq, GPIOF_IN, gpio_name);
+	ret = devm_gpio_request(dev, s->ctdl_ap_irq, gpio_name);
 	if (ret) {
 		dev_err(dev, "devm_gpio_request failed (%d)\n", ret);
 		return ret;
 	}
 
-	ret = devm_request_irq(dev,
-			       gpio_to_irq(s->ctdl_ap_irq),
-			       gsc_irq_handler,
-			       IRQF_TRIGGER_RISING | IRQF_ONESHOT,
+	ret = devm_request_irq(dev, gpio_to_irq(s->ctdl_ap_irq),
+			       gsc_irq_handler, IRQF_TRIGGER_RISING,
 			       dev_name(dev), s);
 	if (ret) {
 		dev_err(s->dev, "devm_request_irq failed (%d)\n", ret);
@@ -400,12 +399,14 @@ static int gsa_gsc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void gsa_gsc_remove(struct platform_device *pdev)
+static int gsa_gsc_remove(struct platform_device *pdev)
 {
 	struct gsc_state *s = platform_get_drvdata(pdev);
 
 	cdev_del(&s->cdn.cdev);
 	device_destroy(gsc_class, s->cdn.devt);
+
+	return 0;
 }
 
 static const struct of_device_id gsa_gsc_of_match[] = {
@@ -434,7 +435,7 @@ static int __init gsa_gsc_driver_init(void)
 		return ret;
 	}
 
-	gsc_class = class_create(KBUILD_MODNAME);
+	gsc_class = class_create(THIS_MODULE, KBUILD_MODNAME);
 	if (IS_ERR(gsc_class)) {
 		ret = PTR_ERR(gsc_class);
 		pr_err("%s: failed (%d) to device class\n", __func__, ret);

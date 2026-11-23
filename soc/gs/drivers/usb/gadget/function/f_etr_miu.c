@@ -22,7 +22,7 @@
 #include <linux/types.h>
 #include <linux/usb/composite.h>
 #include <linux/wait.h>
-#include "../../dwc3/dwc3-exynos.h"
+#include "../../dwc3/gadget.h"
 
 #define MAX_INST_NAME_LEN 40
 
@@ -496,6 +496,7 @@ static const struct of_device_id etr_miu_match[] __initconst = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, etr_miu_match);
 
 static int etr_miu_init(void)
 {

@@ -9,7 +9,6 @@
  *     (c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>
  */
 
-#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/types.h>
@@ -46,6 +45,10 @@
 #include <linux/pid.h>
 #include <linux/sched/task.h>
 #include <soc/google/etm2dram.h>
+
+#ifndef MAX
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
 
 #define S3C2410_WTCON		0x00
 #define S3C2410_WTDAT		0x04
@@ -103,6 +106,13 @@
 
 #define PRINT_CPUS_LIMIT			(30)
 
+#ifndef MIN
+#define MIN(v1, v2) ((v1) < (v2) ? (v1) : (v2))
+#endif
+#ifndef MAX
+#define MAX(v1, v2) ((v1) < (v2) ? (v2) : (v1))
+#endif
+
 static bool nowayout	= WATCHDOG_NOWAYOUT;
 static int tmr_margin;
 static int tmr_atboot	= S3C2410_WATCHDOG_ATBOOT;
@@ -146,6 +156,7 @@ struct s3c2410_wdt {
 	phys_addr_t pmu_alive_pa;
 	unsigned int cluster;
 	int use_multistage_wdt;
+	int enable_cl0_fiq;
 	unsigned int disable_reg_val;
 	unsigned int mask_reset_reg_val;
 	unsigned int noncpu_int_reg_val;
@@ -355,6 +366,32 @@ static const struct s3c2410_wdt_variant drv_data_gs201_cl1 = {
 		  QUIRK_HAS_DBGACK_BIT | QUIRK_HAS_WTMINCNT_REG,
 };
 
+static const struct s3c2410_wdt_variant drv_data_zuma_cl0 = {
+	.noncpu_int_en = 0x1244,
+	.noncpu_out = 0x1220,
+	.mask_bit = 2,		/* nWDTRESET of noncpu_int_en */
+	.cnt_en_bit = 4,	/* CNT_EN_WDT of noncpu_out */
+	.rst_stat_reg = EXYNOS_RST_STAT_REG_OFFSET,
+	.rst_stat_bit = 0,	/* CLUSTER0 WDTRESET of RST_STAT */
+	.pmu_reset_func = s3c2410wdt_noncpu_int_en,
+	.pmu_count_en_func = s3c2410wdt_noncpu_out,
+	.quirks = QUIRK_HAS_PMU_CONFIG | QUIRK_HAS_RST_STAT | QUIRK_HAS_WTCLRINT_REG |
+		  QUIRK_HAS_DBGACK_BIT | QUIRK_HAS_WTMINCNT_REG,
+};
+
+static const struct s3c2410_wdt_variant drv_data_zuma_cl1 = {
+	.noncpu_int_en = 0x1544,
+	.noncpu_out = 0x1520,
+	.mask_bit = 2,		/* nWDTRESET of noncpu_int_en */
+	.cnt_en_bit = 4,	/* CNT_EN_WDT of noncpu_out */
+	.rst_stat_reg = EXYNOS_RST_STAT_REG_OFFSET,
+	.rst_stat_bit = 1,	/* CLUSTER1 WDTRESET of RST_STAT*/
+	.pmu_reset_func = s3c2410wdt_noncpu_int_en,
+	.pmu_count_en_func = s3c2410wdt_noncpu_out,
+	.quirks = QUIRK_HAS_PMU_CONFIG | QUIRK_HAS_RST_STAT | QUIRK_HAS_WTCLRINT_REG |
+		  QUIRK_HAS_DBGACK_BIT | QUIRK_HAS_WTMINCNT_REG,
+};
+
 static const struct of_device_id s3c2410_wdt_match[] = {
 	{ .compatible = "samsung,s3c2410-wdt",
 	  .data = &drv_data_s3c2410 },
@@ -384,6 +421,10 @@ static const struct of_device_id s3c2410_wdt_match[] = {
 	  .data = &drv_data_gs201_cl0 },
 	{ .compatible = "google,gs201-cl1-wdt",
 	  .data = &drv_data_gs201_cl1 },
+	{ .compatible = "google,zuma-cl0-wdt",
+	  .data = &drv_data_zuma_cl0 },
+	{ .compatible = "google,zuma-cl1-wdt",
+	  .data = &drv_data_zuma_cl1 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, s3c2410_wdt_match);
@@ -655,16 +696,16 @@ static void print_wd_owner(struct s3c2410_wdt *wdt, const char *loglvl)
 			task->comm, task->pid, task_state_to_char(task), task_cpu(task));
 
 #ifdef CONFIG_SCHED_INFO
-	if (task->__state == TASK_RUNNING
+	if (task_is_running(task)
 			&& task->sched_info.last_queued == 0) {
 		status = "running";
 		last_nsecs = task->sched_info.last_arrival;
-	} else if (task->__state == TASK_RUNNING
+	} else if (task_is_running(task)
 			&& task->sched_info.last_queued != 0) {
 		status = "queued";
 		last_nsecs = task->sched_info.last_queued;
-	} else if (task->__state == TASK_INTERRUPTIBLE
-			|| task->__state == TASK_UNINTERRUPTIBLE) {
+	} else if (READ_ONCE(task->__state) == TASK_INTERRUPTIBLE ||
+		   READ_ONCE(task->__state) == TASK_UNINTERRUPTIBLE) {
 		status = "blocked";
 		last_nsecs = task->sched_info.last_arrival;
 	}
@@ -673,7 +714,7 @@ static void print_wd_owner(struct s3c2410_wdt *wdt, const char *loglvl)
 	dev_printk(loglvl, wdt->dev, "  %s for %llu secs\n", status,
 			(sched_clock() - last_nsecs) / NSEC_PER_SEC);
 
-	if (task->__state != TASK_RUNNING)
+	if (!task_is_running(current))
 		dump_backtrace(NULL, task, loglvl);
 	else
 		dev_printk(loglvl, wdt->dev, "  (skip dump backtrace; task is running)\n");
@@ -700,7 +741,10 @@ void s3c2410wdt_print_schedstat(const char *loglvl)
 	if (s3c_wdt[BIG_CLUSTER])
 		print_wd_owner(s3c_wdt[BIG_CLUSTER], loglvl);
 
-	if (!wdt || !wdt->schedstat) {
+	if (!wdt)
+		return;
+
+	if (!wdt->schedstat) {
 		dev_err(wdt->dev, "schedstat is invalid: %s not found",
 				wdt ? "little-wdt.schedstat" : "little-wdt");
 		return;
@@ -804,6 +848,10 @@ static int s3c2410wdt_start(struct watchdog_device *wdd)
 		wtcon &= ~S3C2410_WTCON_INTEN;
 		wtcon |= S3C2410_WTCON_RSTEN;
 	}
+
+	/* Enable cl0 watchdog interrupt if fiq handling is true */
+	if (wdt->enable_cl0_fiq)
+		wtcon |= S3C2410_WTCON_INTEN;
 
 	dev_dbg(wdt->dev, "Starting watchdog: count=0x%08x, wtcon=%08lx\n",
 		wdt->count, wtcon);
@@ -1073,7 +1121,7 @@ int s3c2410wdt_set_emergency_stop(int index)
 }
 EXPORT_SYMBOL(s3c2410wdt_set_emergency_stop);
 
-int s3c2410wdt_keepalive_emergency(bool reset, int index, unsigned int sec)
+int s3c2410wdt_keepalive_emergency(bool reset, int index, int sec)
 {
 	struct s3c2410_wdt *wdt = s3c_wdt[index];
 
@@ -1164,7 +1212,7 @@ static void s3c2410wdt_multistage_wdt_keepalive(void)
 	spin_unlock_irqrestore(&s3c_wdt[index]->lock, flags);
 
 	wtcnt = readl(s3c_wdt[index]->reg_base + S3C2410_WTCNT);
-	dev_info(s3c_wdt[index]->dev,
+	dev_dbg(s3c_wdt[index]->dev,
 		 "Watchdog cluster %u keepalive!, old_wtcnt = %lx, wtcnt = %lx\n",
 		 s3c_wdt[index]->cluster, old_wtcnt, wtcnt);
 
@@ -1267,6 +1315,10 @@ int s3c2410wdt_set_emergency_reset(unsigned int timeout_cnt, int index)
 	/* emergency reset with wdt reset */
 	wtcon = readl(wdt->reg_base + S3C2410_WTCON);
 	wtcon |= S3C2410_WTCON_RSTEN | S3C2410_WTCON_ENABLE;
+
+	/* Enable cl0 watchdog interrupt if fiq handling is true */
+	if (wdt->enable_cl0_fiq)
+		wtcon |= S3C2410_WTCON_INTEN;
 
 	if (wdt->drv_data->quirks & QUIRK_HAS_WTMINCNT_REG)
 		writel(wtdat * WINDOW_MULTIPLIER, wdt->reg_base + EXYNOS_WTMINCNT);
@@ -1592,20 +1644,28 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 		dev_info(dev, "It is not a multistage watchdog.\n");
 	}
 
+	if (of_find_property(dev->of_node, "enable-cl0-fiq", NULL)) {
+		wdt->enable_cl0_fiq = true;
+		dev_info(dev, "CL0 fiq handling is enabled.\n");
+	} else {
+		wdt->enable_cl0_fiq = false;
+	}
+
 	if (wdt->drv_data->quirks & QUIRKS_HAVE_PMUREG) {
-		struct device_node *syscon_np __free(device_node);
+		struct device_node *syscon_np;
 		struct resource res;
+
+		wdt->pmureg = syscon_regmap_lookup_by_phandle(dev->of_node,
+							      "samsung,syscon-phandle");
+		if (IS_ERR(wdt->pmureg)) {
+			dev_err(dev, "syscon regmap lookup failed.\n");
+			return PTR_ERR(wdt->pmureg);
+		}
 
 		syscon_np = of_parse_phandle(dev->of_node, "samsung,syscon-phandle", 0);
 		if (!syscon_np) {
 			dev_err(dev, "syscon device node not found\n");
 			return -EINVAL;
-		}
-
-		wdt->pmureg = syscon_node_to_regmap(syscon_np);
-		if (IS_ERR(wdt->pmureg)) {
-			dev_err(dev, "syscon regmap lookup failed.\n");
-			return PTR_ERR(wdt->pmureg);
 		}
 
 		if (of_address_to_resource(syscon_np, 0, &res)) {
@@ -1796,10 +1856,9 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 		wdt_block.nb_panic_block.priority = 256;
 		wdt_block.wdt = wdt;
 		atomic_notifier_chain_register(&panic_notifier_list, &wdt_block.nb_panic_block);
-		dbg_snapshot_register_wdt_ops(
-				(void *)s3c2410wdt_keepalive_emergency,
-				(void *)s3c2410wdt_set_emergency_reset,
-				(void *)s3c2410wdt_set_emergency_stop);
+		dbg_snapshot_register_wdt_ops(s3c2410wdt_keepalive_emergency,
+					      s3c2410wdt_set_emergency_reset,
+					      s3c2410wdt_set_emergency_stop);
 		register_pm_notifier(&s3c2410wdt_pm_nb);
 	}
 	dev_info(dev, "watchdog cluster %d, %sactive, reset %sabled, irq %sabled\n", cluster_index,
@@ -1836,13 +1895,15 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void s3c2410wdt_remove(struct platform_device *dev)
+static int s3c2410wdt_remove(struct platform_device *dev)
 {
+	int ret = 0;
 	struct s3c2410_wdt *wdt = platform_get_drvdata(dev);
 
-	if (wdt->drv_data->pmu_reset_func &&
-	    wdt->drv_data->pmu_reset_func(wdt, true) < 0)
-		return;
+	if (wdt->drv_data->pmu_reset_func)
+		ret = wdt->drv_data->pmu_reset_func(wdt, true);
+	if (ret < 0)
+		return ret;
 
 	watchdog_unregister_device(&wdt->wdt_device);
 
@@ -1858,6 +1919,8 @@ static void s3c2410wdt_remove(struct platform_device *dev)
 		WARN_ON(unregister_trace_android_vh_scheduler_tick(vh_scheduler_tick, wdt));
 		free_percpu(wdt->schedstat);
 	}
+
+	return ret;
 }
 
 static void s3c2410wdt_shutdown(struct platform_device *dev)

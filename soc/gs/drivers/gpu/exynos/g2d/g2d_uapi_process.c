@@ -161,7 +161,7 @@ static int g2d_get_dmabuf(struct g2d_task *task,
 		goto err;
 	}
 
-	sgt = dma_buf_map_attachment_unlocked(attachment, dir);
+	sgt = dma_buf_map_attachment(attachment, dir);
 	if (IS_ERR(sgt)) {
 		ret = PTR_ERR(sgt);
 		perrfndev(g2d_dev, "failed to map dmabuf (%d)", ret);
@@ -185,7 +185,7 @@ err:
 static int g2d_put_dmabuf(struct g2d_device *g2d_dev, struct g2d_buffer *buffer,
 			  enum dma_data_direction dir)
 {
-	dma_buf_unmap_attachment_unlocked(buffer->dmabuf.attachment, buffer->sgt, dir);
+	dma_buf_unmap_attachment(buffer->dmabuf.attachment, buffer->sgt, dir);
 	dma_buf_detach(buffer->dmabuf.dmabuf, buffer->dmabuf.attachment);
 	dma_buf_put(buffer->dmabuf.dmabuf);
 
@@ -205,14 +205,10 @@ static int g2d_get_userptr(struct g2d_task *task,
 	unsigned long end = PFN_UP(data->userptr + data->length);
 	unsigned long page_off = data->userptr & ~PAGE_MASK;
 	unsigned int nr_pages = (unsigned int)(end - begin);
-	unsigned int flags = FOLL_FORCE;
 	struct sg_table *sgt;
 	struct frame_vector *vec;
 	struct page **pages;
 	int ret = -ENOMEM;
-
-	if (dir != DMA_TO_DEVICE)
-		flags |= FOLL_WRITE;
 
 	sgt = kmalloc(sizeof(*sgt), GFP_KERNEL);
 	if (!sgt)
@@ -222,7 +218,7 @@ static int g2d_get_userptr(struct g2d_task *task,
 	if (!vec)
 		goto err_vector;
 
-	ret = get_vaddr_frames(begin << PAGE_SHIFT, nr_pages, flags, vec);
+	ret = get_vaddr_frames(begin << PAGE_SHIFT, nr_pages, vec);
 	if (ret < 0)
 		goto err_get_frames;
 	if (ret != (int)nr_pages) {
@@ -582,11 +578,59 @@ err_buffer:
 	return ret;
 }
 
+static inline bool caps_has_afbcv12(unsigned long caps)
+{
+	return !!(caps & G2D_DEVICE_CAPS_AFBC_V12);
+}
+
+#define TARGET_OFFSET		0x120
+#if IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201)
+#define LAYER_OFFSET(idx)	((2 + (idx)) << 8)
+#elif IS_ENABLED(CONFIG_SOC_ZUMA)
+#define LAYER_OFFSET(idx)       ((3 + (idx)) << 8)
+#endif
+
+enum {
+	G2D_AFBC_REG_VALUE_BLK_16x16 = 0,
+	G2D_AFBC_REG_VALUE_BLK_32x8 = 1,
+};
+
+static unsigned int update_afbc_supblock_size(struct g2d_task *task,
+					      struct g2d_reg regs[])
+{
+	unsigned int i;
+	unsigned int count = 0, index = task->sec.cmd_count;
+
+	if (!caps_has_afbcv12(task->g2d_dev->caps))
+		return 0;
+
+	if (IS_AFBC(task->target.commands[G2DSFR_IMG_COLORMODE].value) &&
+	    !!(task->target.flags & G2D_LAYERFLAG_AFBC_LANDSCAPE)) {
+		regs[count + index].offset = TARGET_OFFSET + 0x94;
+		regs[count + index].value = G2D_AFBC_REG_VALUE_BLK_32x8;
+		count++;
+	}
+
+	for (i = 0; i < task->num_source; i++) {
+		struct g2d_layer *layer = &task->source[i];
+
+		if (IS_AFBC(layer->commands[G2DSFR_IMG_COLORMODE].value) &&
+		    !!(layer->flags & G2D_LAYERFLAG_AFBC_LANDSCAPE)) {
+			regs[count + index].offset = LAYER_OFFSET(i) + 0xB4;
+			regs[count + index].value = G2D_AFBC_REG_VALUE_BLK_32x8;
+			count++;
+		}
+	}
+
+	return count;
+}
+
 int g2d_get_userdata(struct g2d_device *g2d_dev, struct g2d_context *ctx,
 		     struct g2d_task *task, struct g2d_task_data *data)
 {
 	unsigned int i;
 	int ret;
+	struct g2d_reg *cmdaddr = page_address(task->cmd_page);
 
 	/* invalid range check */
 	if (data->num_source < 1 || data->num_source > g2d_dev->max_layers) {
@@ -602,7 +646,7 @@ int g2d_get_userdata(struct g2d_device *g2d_dev, struct g2d_context *ctx,
 	task->flags = data->flags;
 	task->num_source = data->num_source;
 
-	ret = g2d_import_commands(g2d_dev, task, data, task->num_source);
+	ret = g2d_import_commands(g2d_dev, task, data, task->num_source, cmdaddr);
 	if (ret < 0)
 		return ret;
 
@@ -613,6 +657,7 @@ int g2d_get_userdata(struct g2d_device *g2d_dev, struct g2d_context *ctx,
 	ret = g2d_get_sources(g2d_dev, task, data->source);
 	if (ret)
 		goto err_src;
+	task->sec.cmd_count += update_afbc_supblock_size(task, cmdaddr);
 
 	task->release_fence = g2d_create_release_fence(g2d_dev, task, data);
 	if (IS_ERR(task->release_fence)) {

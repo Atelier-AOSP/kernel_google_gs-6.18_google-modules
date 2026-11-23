@@ -20,7 +20,7 @@
 
 #define MMU_TLB_ENTRY_VALID(reg)	((reg) >> 28)
 #define MMU_SBB_ENTRY_VALID(reg)	((reg) >> 28)
-#define MMU_VADDR_FROM_TLB(reg, idx)	((((reg) & 0xFFFFC) | ((idx) & 0x3)) << 12)
+#define MMU_VADDR_FROM_TLB(reg, idx)	(((reg) & 0xFFFFC | (idx) & 0x3) << 12)
 #define MMU_VID_FROM_TLB(reg)		(((reg) >> 20) & 0x7U)
 #define MMU_PADDR_FROM_TLB(reg)		((phys_addr_t)((reg) & 0xFFFFFF) << 12)
 #define MMU_VADDR_FROM_SBB(reg)		(((reg) & 0xFFFFF) << 12)
@@ -97,11 +97,16 @@ static char *sysmmu_fault_name[SYSMMU_FAULTS_NUM] = {
 	"RESERVED",
 };
 
+static unsigned int sysmmu_fault_type[SYSMMU_FAULTS_NUM] = {
+	IOMMU_FAULT_REASON_WALK_EABT,
+	IOMMU_FAULT_REASON_PTE_FETCH,
+	IOMMU_FAULT_REASON_ACCESS,
+	IOMMU_FAULT_REASON_UNKNOWN,
+};
+
 struct samsung_sysmmu_fault_info {
 	struct sysmmu_drvdata *drvdata;
-	u64 addr;
-	u32 vid;
-	unsigned int type;
+	struct iommu_fault_event event;
 };
 
 static inline u32 __sysmmu_get_intr_status(struct sysmmu_drvdata *data,
@@ -346,7 +351,7 @@ static void sysmmu_show_secure_fault_information(struct sysmmu_drvdata *drvdata,
 	char err_msg[128];
 
 	pgtable = read_sec_info(MMU_SEC_REG(drvdata, IDX_SEC_FLPT_BASE));
-	pgtable <<= PAGE_SHIFT;
+	pgtable <<= PT_BASE_SHIFT;
 
 	info = read_sec_info(MMU_SEC_REG(drvdata, IDX_FAULT_TRANS_INFO));
 
@@ -357,8 +362,7 @@ static void sysmmu_show_secure_fault_information(struct sysmmu_drvdata *drvdata,
 
 	pr_crit("%s (pgtable @ %pa)\n", err_msg, &pgtable);
 	pr_crit("AxID: %#x, AxLEN: %#x\n", info & 0xFFFF, (info >> 16) & 0xF);
-
-	if (!pfn_valid(pgtable >> PAGE_SHIFT)) {
+	if (!pfn_valid(PFN_DOWN(pgtable))) {
 		pr_crit("Page table base is not in a valid memory region\n");
 		pgtable = 0;
 	}
@@ -406,7 +410,7 @@ static void sysmmu_show_fault_information(struct sysmmu_drvdata *drvdata,
 
 	for (i = 0; i < __max_vids(drvdata); i++) {
 		pgtable[i] = readl_relaxed(MMU_VM_REG(drvdata, IDX_FLPT_BASE, i));
-		pgtable[i] <<= PAGE_SHIFT;
+		pgtable[i] <<= PT_BASE_SHIFT;
 	}
 
 	pr_crit("----------------------------------------------------------\n");
@@ -416,7 +420,7 @@ static void sysmmu_show_fault_information(struct sysmmu_drvdata *drvdata,
 		if (pgtable[i] != drvdata->pgtable[i])
 			pr_crit("Page table (VID %u) base of driver: %pa\n", i,
 				&drvdata->pgtable[i]);
-		if (pgtable[i] && !pfn_valid(pgtable[i] >> PAGE_SHIFT)) {
+		if (pgtable[i] && !pfn_valid(PFN_DOWN(pgtable[i]))) {
 			pr_crit("Page table (VID %u) base is not in a valid memory region\n", i);
 			pgtable[i] = 0;
 		}
@@ -446,9 +450,9 @@ static void sysmmu_show_fault_information(struct sysmmu_drvdata *drvdata,
 static void sysmmu_get_interrupt_info(struct sysmmu_drvdata *data, unsigned int *intr_type,
 				      unsigned int *vid, sysmmu_iova_t *addr, bool is_secure)
 {
-	unsigned int istatus;
+	u32 istatus;
 
-	istatus = __ffs(__sysmmu_get_intr_status(data, is_secure));
+	istatus = (unsigned int)__ffs(__sysmmu_get_intr_status(data, is_secure));
 	*vid = istatus / 4;
 	*intr_type = istatus % 4;
 	*addr = __sysmmu_get_fault_address(data, *vid, is_secure);
@@ -497,29 +501,27 @@ irqreturn_t samsung_sysmmu_irq(int irq, void *dev_id)
 
 static int samsung_sysmmu_fault_notifier(struct device *dev, void *data)
 {
-	struct sysmmu_clientdata *client = dev_iommu_priv_get(dev);
-	struct samsung_sysmmu_fault_info *fi = data;
-	struct sysmmu_drvdata *drvdata = fi->drvdata;
+	struct samsung_sysmmu_fault_info *fi;
+	struct sysmmu_clientdata *client;
+	struct sysmmu_drvdata *drvdata;
 	unsigned int i;
-	int ret = -EFAULT;
+	int ret, result = 0;
+
+	fi = (struct samsung_sysmmu_fault_info *)data;
+	drvdata = fi->drvdata;
+
+	client = (struct sysmmu_clientdata *) dev_iommu_priv_get(dev);
 
 	for (i = 0; i < client->sysmmu_count; i++) {
-		if (drvdata == client->sysmmus[i] && drvdata->domain[fi->vid]) {
-			ret = report_iommu_fault(&drvdata->domain[fi->vid]->domain, dev,
-						 fi->addr, fi->type);
-			/*
-			 * If fault handler is not installed, the return value is -ENOSYS.
-			 * If fault handler is installed,
-			 *    If it return 0 or -EAGAIN, treat it as non-fatal
-			 *    Else return the error code
-			 */
+		if (drvdata == client->sysmmus[i]) {
+			ret = iommu_report_device_fault(dev, &fi->event);
 			if (ret == -EAGAIN)
-				ret = 0;
+				result = ret;
 			break;
 		}
 	}
 
-	return ret;
+	return result;
 }
 
 irqreturn_t samsung_sysmmu_irq_thread(int irq, void *dev_id)
@@ -530,29 +532,30 @@ irqreturn_t samsung_sysmmu_irq_thread(int irq, void *dev_id)
 	struct sysmmu_drvdata *drvdata = dev_id;
 	bool is_secure = (irq == drvdata->secure_irq);
 	struct iommu_group *group = drvdata->group;
+	enum iommu_fault_reason reason;
 	struct samsung_sysmmu_fault_info fi = {
 		.drvdata = drvdata,
+		.event.fault.type = IOMMU_FAULT_DMA_UNRECOV,
 	};
 	char fault_msg[128] = "Unspecified SysMMU fault";
-	u32 info;
 
 	/* Prevent power down while handling faults */
 	pm_runtime_get_sync(drvdata->dev);
 
 	sysmmu_get_interrupt_info(drvdata, &itype, &vid, &addr, is_secure);
+	reason = sysmmu_fault_type[itype];
 
-	fi.addr = addr;
-	fi.vid = vid;
-
-	if (is_secure)
-		info = read_sec_info(MMU_SEC_REG(drvdata, IDX_FAULT_TRANS_INFO));
-	else
-		info = readl_relaxed(MMU_VM_REG(drvdata, IDX_FAULT_TRANS_INFO, vid));
-	fi.type = IS_READ_FAULT(info) ? IOMMU_FAULT_READ : IOMMU_FAULT_WRITE;
+	fi.event.fault.event.addr = addr;
+	fi.event.fault.event.pasid = vid;
+	if (vid)
+		fi.event.fault.event.flags |= IOMMU_FAULT_UNRECOV_PASID_VALID;
+	fi.event.fault.event.reason = reason;
+	if (reason == IOMMU_FAULT_REASON_PTE_FETCH)
+		fi.event.fault.type = IOMMU_FAULT_PAGE_REQ;
 
 	ret = iommu_group_for_each_dev(group, &fi,
 				       samsung_sysmmu_fault_notifier);
-	if (ret == 0) {
+	if (ret == -EAGAIN) {
 		if (is_secure) {
 			if (drvdata->async_fault_mode && !drvdata->hide_page_fault)
 				sysmmu_show_secure_fault_information(drvdata, itype, addr);
@@ -567,7 +570,7 @@ irqreturn_t samsung_sysmmu_irq_thread(int irq, void *dev_id)
 			phys_addr_t pgtable;
 
 			pgtable = readl_relaxed(MMU_VM_REG(drvdata, IDX_FLPT_BASE, vid));
-			pgtable <<= PAGE_SHIFT;
+			pgtable <<= PT_BASE_SHIFT;
 			if (!drvdata->hide_page_fault)
 				sysmmu_show_fault_info_simple(drvdata, itype, vid, addr, &pgtable);
 			sysmmu_clear_interrupt(drvdata, false);

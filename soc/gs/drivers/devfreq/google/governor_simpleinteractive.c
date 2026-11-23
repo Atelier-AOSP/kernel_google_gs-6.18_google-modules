@@ -23,7 +23,7 @@
 
 #include <linux/devfreq.h>
 #include <soc/google/exynos-devfreq.h>
-#include <trace/events/clock.h>
+#include <trace/events/power.h>
 #include <uapi/linux/sched/types.h>
 
 #include "dvfs_events.h"
@@ -168,7 +168,13 @@ static unsigned int mif_to_int_freq(struct devfreq_alt_dvfs_data *alt_data,
 	return alt_data->mif_int_tbl[i].int_freq;
 }
 
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+/* In Zuma, NOCL1A is equivalent to BUS2 in WHI. */
+#define PPC_BUS2_ID 1
+#else
 #define PPC_BUS2_ID 2
+#endif
+
 static unsigned long update_load(struct devfreq_dev_status *stat,
 				 struct devfreq_simple_interactive_data *data)
 {
@@ -212,6 +218,7 @@ static unsigned long update_load(struct devfreq_dev_status *stat,
 		int_freq = mif_to_int_freq(alt_data, bus2_freq);
 		exynos_pm_qos_update_request(&exynos_df->bus_pm_qos_min,
 					     int_freq);
+		trace_clock_set_rate("INT_ALT", int_freq, raw_smp_processor_id());
 	}
 	trace_dvfs_update_load(freq, alt_data, idx, int_freq);
 	trace_clock_set_rate("MIF_ALT", freq, raw_smp_processor_id());
@@ -257,6 +264,9 @@ static int devfreq_simple_interactive_func(struct devfreq *df,
 
 	*freq = exynos_pm_qos_min;
 
+	if (!data->df_update_enable)
+		goto out;
+
 #if IS_ENABLED(CONFIG_EXYNOS_ALT_DVFS)
 	stat = &df->last_status;
 
@@ -295,7 +305,7 @@ static int devfreq_simple_interactive_func(struct devfreq *df,
 
 		goto out;
 	} else if (timer_pending(&data->freq_timer)) {
-		timer_delete_sync(&data->freq_timer);
+		del_timer_sync(&data->freq_timer);
 	}
 
 	data->changed_time = jiffies;
@@ -305,30 +315,38 @@ out:
 	 * save current frequency and time
 	 * to use when update_devfreq is called next
 	 */
+	*freq = max_t(unsigned long, data->governor_freq, *freq);
 	data->prev_freq = df->previous_freq;
 	*freq = min(exynos_pm_qos_max, *freq);
 #if IS_ENABLED(CONFIG_EXYNOS_ALT_DVFS)
 	if (df->profile->get_dev_status && !exynos_df->suspend_flag) {
 		unsigned long expires = jiffies;
 
-		timer_delete(&data->freq_timer);
-		data->freq_timer.expires = expires +
-			msecs_to_jiffies(data->alt_data.min_sample_time * 2);
-		add_timer_on(&data->freq_timer, BOUND_CPU_NUM);
+		/*
+		 * If this function is triggered from timer path
+		 * OR (if the function is triggered from notifier path
+		 * AND there is no timer and we need to reporgram one.)
+		 */
+		if (data->df_update_enable || !timer_pending(&data->freq_timer)) {
+			del_timer(&data->freq_timer);
+			data->freq_timer.expires = expires +
+				msecs_to_jiffies(data->alt_data.min_sample_time * 2);
+			add_timer_on(&data->freq_timer, BOUND_CPU_NUM);
+		}
 
 		if (*freq > exynos_df->min_freq) {
 			/* timer is bound to cpu0 */
-			timer_delete(&data->freq_slack_timer);
+			del_timer(&data->freq_slack_timer);
 			data->freq_slack_timer.expires = expires +
 				  msecs_to_jiffies(data->alt_data.hold_sample_time);
 			add_timer_on(&data->freq_slack_timer, BOUND_CPU_NUM);
 		} else if (timer_pending(&data->freq_slack_timer)) {
-			timer_delete(&data->freq_slack_timer);
+			del_timer(&data->freq_slack_timer);
 		}
 
 	} else if (exynos_df->suspend_flag) {
-		timer_delete_sync(&data->freq_timer);
-		timer_delete(&data->freq_slack_timer);
+		del_timer_sync(&data->freq_timer);
+		del_timer(&data->freq_slack_timer);
 	}
 #endif
 
@@ -338,6 +356,7 @@ out:
 static int devfreq_change_freq_task(void *data)
 {
 	struct devfreq *df = data;
+	struct devfreq_simple_interactive_data *data_alt = df->data;
 
 	while (!kthread_should_stop()) {
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -347,7 +366,9 @@ static int devfreq_change_freq_task(void *data)
 		set_current_state(TASK_RUNNING);
 
 		mutex_lock(&df->lock);
+		data_alt->df_update_enable = true;
 		update_devfreq(df);
+		data_alt->df_update_enable = false;
 		mutex_unlock(&df->lock);
 	}
 
@@ -363,8 +384,7 @@ static void alt_dvfs_nop_timer(struct timer_list *timer)
 /*timer callback function send a signal */
 static void simple_interactive_timer(struct timer_list *timer)
 {
-	struct devfreq_simple_interactive_data *gov_data = timer_container_of(gov_data, timer,
-									      freq_timer);
+	struct devfreq_simple_interactive_data *gov_data = from_timer(gov_data, timer, freq_timer);
 
 	wake_up_process(gov_data->change_freq_task);
 }
@@ -437,9 +457,9 @@ static int devfreq_simple_interactive_register_notifier(struct devfreq *df)
 	return 0;
 
 err3:
-	timer_destroy_on_stack(&data->freq_timer);
+	destroy_timer_on_stack(&data->freq_timer);
 #if IS_ENABLED(CONFIG_EXYNOS_ALT_DVFS)
-	timer_destroy_on_stack(&data->freq_slack_timer);
+	destroy_timer_on_stack(&data->freq_slack_timer);
 #endif
 	exynos_pm_qos_remove_notifier(data->pm_qos_class, &data->nb.nb);
 	if (data->pm_qos_class_max)
@@ -471,7 +491,7 @@ static int devfreq_simple_interactive_unregister_notifier(struct devfreq *df)
 
 	ret = exynos_pm_qos_remove_notifier(data->pm_qos_class, &data->nb.nb);
 
-	timer_destroy_on_stack(&data->freq_timer);
+	destroy_timer_on_stack(&data->freq_timer);
 	kthread_stop(data->change_freq_task);
 
 err:

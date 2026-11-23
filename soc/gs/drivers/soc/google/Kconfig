@@ -19,12 +19,42 @@ config SOC_GS201
 config BOARD_SLIDER
 	bool "Google Slider Board"
 	depends on SOC_GS101
-	select OF_GENERATE_SYMBOLS
 
 config BOARD_CLOUDRIPPER
 	bool "Google Cloudripper Board"
 	depends on SOC_GS201
-	select OF_GENERATE_SYMBOLS
+
+config BOARD_EMULATOR
+	bool "Google Zuma emulator"
+	help
+	  Common configuration for both hybrid and full emulator.
+
+config SOC_ZUMA
+	bool "Google Zuma"
+	depends on SOC_GOOGLE
+
+config SOC_ZUMAPRO
+	bool "Google Zuma Pro"
+	depends on SOC_GOOGLE
+	depends on SOC_ZUMA
+
+config BOARD_RIPCURRENT
+	bool "Google Ripcurrent Board"
+	depends on SOC_ZUMA
+
+config BOARD_ZUMA_EMULATOR
+	bool "Google Zuma on full emulator"
+	depends on SOC_ZUMA
+	select BOARD_EMULATOR
+	help
+	Support Zuma on emulator
+
+config BOARD_ZUMA_HYBRID
+	bool "Google Zuma on hybrid emulator"
+	depends on SOC_ZUMA
+	select BOARD_EMULATOR
+	help
+	Support Zuma on hybrid emulator
 
 config GS_CHIPID
 	tristate "GS Chipid controller driver"
@@ -131,11 +161,11 @@ config EXYNOS_PM
 
 config EXYNOS_CPUPM
 	tristate "CPU Power Management driver"
-	depends on (SOC_GS101 || SOC_GS201) && PMUCAL
+	depends on PMUCAL
 	help
 	Support CPU Power Control for GS SoC.
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/acpm/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/acpm/Kconfig"
 
 config ACPM_DVFS
 	tristate "ACPM DVFS manager"
@@ -193,23 +223,11 @@ config VH_KERNEL
 	help
 	Modules for vendor kernel hooks.
 
-config BOARD_EMULATOR
-	bool "EMULATOR platform"
-	select OF_GENERATE_SYMBOLS
-
-config BOARD_GS201_EMULATOR
-	bool "EMULATOR Platform for GS201"
-	depends on SOC_GS201 && BOARD_EMULATOR
-	select OF_GENERATE_SYMBOLS
+config PIXEL_STAT
+	tristate "Enable Pixel statistics"
+	default n
 	help
-	GS201 Zebu Emulator System
-
-config BOARD_GS201_HYBRID
-	bool "HYBRID EMULATOR Platform for GS201"
-	depends on SOC_GS201 && BOARD_EMULATOR
-	select OF_GENERATE_SYMBOLS
-	help
-	GS201 Hybrid Zebu Emulator System, it is support for Android Platform
+	Support Pixel statistics.
 
 config EXYNOS_SECURE_LOG
 	tristate "Exynos Secure Log"
@@ -223,21 +241,31 @@ config EXYNOS_CONTENT_PATH_PROTECTION
 	help
 	  Enable content path protection of EXYNOS.
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/gsa/Kconfig"
+config PERF_TRACE_CTRS
+	tristate "perf_trace_counters support"
+	default n
+	help
+	Support perf_trace_counters
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/cpif/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/gsa/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/debug/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/debug/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/eh/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/gnssif_spi/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/s2mpu/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/eh/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/vh/kernel/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/gcma/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/boot_control/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/pa_kill/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/soc/google/pixel_stat/Kconfig"
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/smra/Kconfig"
+
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/s2mpu/Kconfig"
+
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/vh/kernel/Kconfig"
+
+source "$(KCONFIG_SOC_GS_PREFIX)drivers/soc/google/boot_control/Kconfig"
 
 config HARDLOCKUP_DEBUG
 	tristate "Hardlockup Debugging"
@@ -275,18 +303,18 @@ config PKVM_S2MPU_V9
 	help
 	This module is a driver for the stage-2 IOMMU controlled by hypervisor.
 
-config WLAN_TRACKER
-	bool "WiFi performance tracker driver"
-	depends on SOC_GS201
-	default n
-	help
-	Module for wlan performance tracker.
-
 config KERNEL_TOP
 	tristate "Display processes statistic"
 	default n
 	help
 	  This module exposes kernel function for modules to debugging
 	  processes statistic.
+
+config GOOGLE_MODEMCTL
+	tristate "Common modem control interfaces"
+	default n
+	help
+	  This module provides common helpers and control interfaces for modems
+	  and clients that may want to interact with them.
 
 endmenu

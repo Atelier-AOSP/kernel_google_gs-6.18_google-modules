@@ -13,7 +13,6 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -21,7 +20,6 @@
 #include <linux/kernel.h>
 #include <linux/kvm_host.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/phy/phy.h>
@@ -37,7 +35,7 @@
 #include <linux/exynos_otp.h>
 #endif
 #ifdef CONFIG_OF
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #endif
 
@@ -197,7 +195,6 @@ hs_phy_tune_show(struct device *dev,
 	tune_node = of_parse_phandle(dev->of_node, "hs_tune_param", 0);
 
 	ret = of_property_read_u32_array(tune_node, "hs_tune_cnt", &tune_num, 1);
-	of_node_put(tune_node);
 	if (ret) {
 		len += snprintf(buf + len, PAGE_SIZE,
 				"Can't get tune value!!!\n");
@@ -234,7 +231,6 @@ hs_phy_tune_store(struct device *dev,
 
 	tune_node = of_parse_phandle(dev->of_node, "hs_tune_param", 0);
 	ret = of_property_read_u32_array(tune_node, "hs_tune_cnt", &tune_num, 1);
-	of_node_put(tune_node);
 	if (ret) {
 		pr_err("Can't get hs_tune_cnt!!!\n");
 		goto exit;
@@ -266,7 +262,6 @@ phy_tune_show(struct device *dev,
 	tune_node = of_parse_phandle(dev->of_node, "ss_tune_param", 0);
 
 	ret = of_property_read_u32_array(tune_node, "ss_tune_cnt", &tune_num, 1);
-	of_node_put(tune_node);
 	if (ret) {
 		len += snprintf(buf + len, PAGE_SIZE,
 				"Can't get tune value!!!\n");
@@ -303,7 +298,6 @@ phy_tune_store(struct device *dev,
 
 	tune_node = of_parse_phandle(dev->of_node, "ss_tune_param", 0);
 	ret = of_property_read_u32_array(tune_node, "ss_tune_cnt", &tune_num, 1);
-	of_node_put(tune_node);
 	if (ret) {
 		pr_err("Can't get ss_tune_cnt!!!\n");
 		goto exit;
@@ -1026,6 +1020,7 @@ static int exynos_usbdrd_fill_hstune_param(struct exynos_usbdrd_phy *phy_drd,
 					   struct device_node *node)
 {
 	struct device *dev = phy_drd->dev;
+	struct device_node *child = NULL;
 	struct exynos_usb_tune_param *hs_tune_param;
 	size_t size = sizeof(struct exynos_usb_tune_param);
 	int ret;
@@ -1045,7 +1040,7 @@ static int exynos_usbdrd_fill_hstune_param(struct exynos_usbdrd_phy *phy_drd,
 		return -ENOMEM;
 	phy_drd->usbphy_info.tune_param = hs_tune_param;
 
-	for_each_child_of_node_scoped(node, child) {
+	for_each_child_of_node(node, child) {
 		ret = of_property_read_string(child, "tune_name", &name);
 		if (ret == 0) {
 			memcpy(hs_tune_param[param_index].name, name, strlen(name));
@@ -1077,6 +1072,7 @@ static int exynos_usbdrd_fill_sstune_param(struct exynos_usbdrd_phy *phy_drd,
 					   struct device_node *node)
 {
 	struct device *dev = phy_drd->dev;
+	struct device_node *child = NULL;
 	struct exynos_usb_tune_param *ss_tune_param;
 	size_t size = sizeof(struct exynos_usb_tune_param);
 	int ret;
@@ -1093,7 +1089,7 @@ static int exynos_usbdrd_fill_sstune_param(struct exynos_usbdrd_phy *phy_drd,
 		return -ENOMEM;
 	phy_drd->usbphy_sub_info.tune_param = ss_tune_param;
 
-	for_each_child_of_node_scoped(node, child) {
+	for_each_child_of_node(node, child) {
 		ret = of_property_read_string(child, "tune_name", &name);
 		if (ret == 0) {
 			memcpy(ss_tune_param[idx].name, name, strlen(name));
@@ -1221,7 +1217,6 @@ static int exynos_usbdrd_get_sub_phyinfo(struct exynos_usbdrd_phy *phy_drd)
 	tune_node = of_parse_phandle(dev->of_node, "ss_tune_param", 0);
 	if (tune_node) {
 		ret = exynos_usbdrd_fill_sstune_param(phy_drd, tune_node);
-		of_node_put(tune_node);
 		if (ret < 0) {
 			dev_err(dev, "can't fill super speed tuning param\n");
 			return -EINVAL;
@@ -1293,11 +1288,9 @@ static int exynos_usbdrd_get_phyinfo(struct exynos_usbdrd_phy *phy_drd)
 		ret = exynos_usbdrd_fill_sstune(phy_drd, tune_node);
 		if (ret < 0) {
 			dev_err(dev, "can't fill super speed tuning value\n");
-			of_node_put(tune_node);
 			return -EINVAL;
 		}
 	}
-	of_node_put(tune_node);
 
 	tune_node = of_parse_phandle(dev->of_node, "hs_tune_info", 0);
 	if (tune_node)
@@ -1307,16 +1300,13 @@ static int exynos_usbdrd_get_phyinfo(struct exynos_usbdrd_phy *phy_drd)
 		ret = exynos_usbdrd_fill_hstune(phy_drd, tune_node);
 		if (ret < 0) {
 			dev_err(dev, "can't fill high speed tuning value\n");
-			of_node_put(tune_node);
 			return -EINVAL;
 		}
 	}
-	of_node_put(tune_node);
 
 	tune_node = of_parse_phandle(dev->of_node, "hs_tune_param", 0);
 	if (tune_node) {
 		ret = exynos_usbdrd_fill_hstune_param(phy_drd, tune_node);
-		of_node_put(tune_node);
 		if (ret < 0) {
 			dev_err(dev, "can't fill high speed tuning param\n");
 			return -EINVAL;
@@ -1753,6 +1743,11 @@ static void exynos_usbdrd_pipe3_tune(struct exynos_usbdrd_phy *phy_drd,
 	struct exynos_usb_tune_param *ss_tune_param = phy_drd->usbphy_sub_info.tune_param;
 	int i;
 
+	if (!ss_tune_param) {
+		dev_err(phy_drd->dev, "no tune param\n");
+		return;
+	}
+
 	if (phy_state >= OTG_STATE_A_IDLE) {
 		/* for host mode */
 		for (i = 0; ss_tune_param[i].value != EXYNOS_USB_TUNE_LAST; i++) {
@@ -1780,6 +1775,11 @@ static void exynos_usbdrd_utmi_tune(struct exynos_usbdrd_phy *phy_drd,
 {
 	struct exynos_usb_tune_param *hs_tune_param = phy_drd->usbphy_info.tune_param;
 	int i;
+
+	if (!hs_tune_param) {
+		dev_err(phy_drd->dev, "no tune param\n");
+		return;
+	}
 
 	if (phy_state >= OTG_STATE_A_IDLE) {
 		/* for host mode */
@@ -2056,7 +2056,7 @@ void exynos_usbdrd_usbdp_tca_set(struct phy *phy, int mux, int low_power_en)
 EXPORT_SYMBOL_GPL(exynos_usbdrd_usbdp_tca_set);
 
 static struct phy *exynos_usbdrd_phy_xlate(struct device *dev,
-					   const struct of_phandle_args *args)
+					   struct of_phandle_args *args)
 {
 	struct exynos_usbdrd_phy *phy_drd = dev_get_drvdata(dev);
 
@@ -2151,13 +2151,19 @@ static int exynos_usbdrd_phy_probe(struct platform_device *pdev)
 	const struct of_device_id *match;
 	const struct exynos_usbdrd_phy_drvdata *drv_data;
 	struct regmap *reg_pmu;
-	struct device_node *syscon_np __free(device_node) = NULL;
+	struct device_node *syscon_np;
 	struct resource pmu_res;
-	struct platform_device *s2mpu_pdev;
-	struct device_node *s2mpu_np;
+	struct device_node	*s2mpu_np;
+	struct platform_device	*s2mpu_pdev;
 	u32 pmu_offset, pmu_offset_dp, pmu_offset_tcxo;
 	u32 pmu_mask, pmu_mask_tcxo, pmu_mask_pll;
 	int i, ret;
+
+	s2mpu_np = of_parse_phandle(dev->of_node, "s2mpus", 0);
+	if (s2mpu_np) {
+		s2mpu_pdev = of_find_device_by_node(s2mpu_np);
+		of_node_put(s2mpu_np);
+	}
 
 #if IS_ENABLED(CONFIG_EXYNOS_PD_HSI0)
 	if (!exynos_pd_hsi0_get_ldo_status()) {
@@ -2171,16 +2177,13 @@ static int exynos_usbdrd_phy_probe(struct platform_device *pdev)
 	if (!phy_drd)
 		return -ENOMEM;
 
-	s2mpu_np = of_parse_phandle(dev->of_node, "s2mpu", 0);
-	if (s2mpu_np) {
-		s2mpu_pdev = of_find_device_by_node(s2mpu_np);
-		of_node_put(s2mpu_np);
-		if (s2mpu_pdev)
-			phy_drd->s2mpu = &s2mpu_pdev->dev;
-	}
-
 	dev_set_drvdata(dev, phy_drd);
 	phy_drd->dev = dev;
+
+	if (s2mpu_pdev)
+		phy_drd->s2mpu = &s2mpu_pdev->dev;
+	else
+		phy_drd->s2mpu = NULL;
 
 	match = of_match_node(exynos_usbdrd_phy_of_match, pdev->dev.of_node);
 
@@ -2248,16 +2251,17 @@ static int exynos_usbdrd_phy_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	reg_pmu = syscon_regmap_lookup_by_phandle(dev->of_node,
+						  "samsung,pmu-syscon");
+	if (IS_ERR(reg_pmu)) {
+		dev_err(dev, "Failed to lookup PMU regmap\n");
+		return ret;
+	}
+
 	syscon_np = of_parse_phandle(dev->of_node, "samsung,pmu-syscon", 0);
 	if (!syscon_np) {
 		dev_err(dev, "syscon device node not found\n");
 		return -EINVAL;
-	}
-
-	reg_pmu = syscon_node_to_regmap(syscon_np);
-	if (IS_ERR(reg_pmu)) {
-		dev_err(dev, "Failed to lookup PMU regmap\n");
-		return ret;
 	}
 
 	if (of_address_to_resource(syscon_np, 0, &pmu_res)) {

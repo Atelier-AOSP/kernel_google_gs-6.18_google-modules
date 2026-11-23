@@ -5,7 +5,6 @@
  * USB contaminant detection
  */
 
-#include <linux/bitfield.h>
 #include <linux/device.h>
 #include <linux/irqreturn.h>
 #include <linux/module.h>
@@ -68,8 +67,8 @@ static int read_adc_mv(struct max777x9_contaminant *contaminant,
 	int ret;
 
 	/* Channel & scale select */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL,
-				    FIELD_PREP(ADCINSEL, channel));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL_MASK,
+				    channel << ADC_CHANNEL_OFFSET);
 	if (ret < 0)
 		return -EIO;
 
@@ -91,8 +90,7 @@ static int read_adc_mv(struct max777x9_contaminant *contaminant,
 	if (ret < 0)
 		return -EIO;
 
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL,
-				    FIELD_PREP(ADCINSEL, 0));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_ADC_CTRL1, ADCINSEL_MASK, 0);
 	if (ret < 0)
 		return -EIO;
 
@@ -115,9 +113,8 @@ int max77759_read_resistance_kohm(struct max777x9_contaminant *contaminant,
 	if (channel == CC1_SCALE1 || channel == CC2_SCALE1 || channel == CC1_SCALE2 ||
 	    channel == CC2_SCALE2) {
 		/* Enable 1uA current source */
-		ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-					    FIELD_PREP(CCLPMODESEL,
-						       ULTRA_LOW_POWER_MODE));
+		ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+					    ULTRA_LOW_POWER_MODE);
 		if (ret < 0)
 			return -EIO;
 		/*
@@ -129,8 +126,7 @@ int max77759_read_resistance_kohm(struct max777x9_contaminant *contaminant,
 		 */
 
 		/* Enable 1uA current source */
-		ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCRPCTRL,
-					    FIELD_PREP(CCRPCTRL, UA_1_SRC));
+		ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCRPCTRL_MASK, UA_1_SRC);
 		if (ret < 0)
 			return -EIO;
 
@@ -155,8 +151,8 @@ int max77759_read_resistance_kohm(struct max777x9_contaminant *contaminant,
 	 * SBU measurement
 	 * OVP disable
 	 */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-				    FIELD_PREP(CCLPMODESEL, ULTRA_LOW_POWER_MODE));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+				    ULTRA_LOW_POWER_MODE);
 	if (ret < 0)
 		return -EIO;
 
@@ -211,8 +207,7 @@ int max77759_read_comparators(struct max777x9_contaminant *contaminant,
 	logbuffer_log(log, "Contaminant: enable comparators");
 
 	/* Enable 80uA source */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCRPCTRL,
-				    FIELD_PREP(CCRPCTRL, UA_80_SRC));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCRPCTRL_MASK, UA_80_SRC);
 	if (ret < 0)
 		return -EIO;
 
@@ -224,8 +219,8 @@ int max77759_read_comparators(struct max777x9_contaminant *contaminant,
 	MAX77759_LOG_REGISTER(regmap, TCPC_VENDOR_CC_CTRL1, log);
 
 	/* Disable low power mode */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-				    FIELD_PREP(CCLPMODESEL, LOW_POWER_MODE_DISABLE));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+				    LOW_POWER_MODE_DISABLE);
 	if (ret < 0)
 		return -EIO;
 	MAX77759_LOG_REGISTER(regmap, TCPC_VENDOR_CC_CTRL2, log);
@@ -260,8 +255,7 @@ int max77759_read_comparators(struct max777x9_contaminant *contaminant,
 	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL1, CCCOMPEN, 0);
 	if (ret < 0)
 		return -EIO;
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCRPCTRL,
-				    FIELD_PREP(CCRPCTRL, 0));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCRPCTRL_MASK, 0);
 	if (ret < 0)
 		return -EIO;
 
@@ -346,11 +340,10 @@ int max77759_enable_dry_detection(struct max777x9_contaminant *contaminant)
 	 * tunable: 1000mV/1000K thershold for water detection
 	 * tunable: 4.8s water cycle
 	 */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL3,
-				    CCWTRDEB | CCWTRSEL | WTRCYCLE,
-				    FIELD_PREP(CCWTRDEB, CCWTRDEB_1MS)
-				    | FIELD_PREP(CCWTRSEL, CCWTRSEL_1V)
-				    | FIELD_PREP(WTRCYCLE, WTRCYCLE_4_8_S));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL3, CCWTRDEB_MASK | CCWTRSEL_MASK
+				    | WTRCYCLE_MASK, CCWTRDEB_1MS << CCWTRDEB_SHIFT |
+				    CCWTRSEL_1V << CCWTRSEL_SHIFT | WTRCYCLE_4_8_S <<
+				    WTRCYCLE_SHIFT);
 	if (ret < 0)
 		return -EIO;
 
@@ -368,8 +361,8 @@ int max77759_enable_dry_detection(struct max777x9_contaminant *contaminant)
 		return -EIO;
 	logbuffer_log(chip->log, "Contaminant: TCPC_VENDOR_CC_CTRL1 %u", temp);
 
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-				    FIELD_PREP(CCLPMODESEL, ULTRA_LOW_POWER_MODE));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+				    ULTRA_LOW_POWER_MODE);
 	if (ret < 0)
 		return -EIO;
 	ret = max77759_read8(regmap, TCPC_VENDOR_CC_CTRL2, &temp);
@@ -400,19 +393,18 @@ int max77759_disable_contaminant_detection(struct max77759_plat *chip)
 	if (!contaminant)
 		return 0;
 
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL, 0);
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK, 0);
 	if (ret < 0)
 		return -EIO;
 
-	ret = max77759_write8(regmap, TCPC_ROLE_CTRL,
-			      TCPC_ROLE_CTRL_DRP
-			      | FIELD_PREP(TCPC_ROLE_CTRL_CC1, TCPC_ROLE_CTRL_CC_RD)
-			      | FIELD_PREP(TCPC_ROLE_CTRL_CC2, TCPC_ROLE_CTRL_CC_RD));
+	ret = max77759_write8(regmap, TCPC_ROLE_CTRL, TCPC_ROLE_CTRL_DRP |
+			      (TCPC_ROLE_CTRL_CC_RD << TCPC_ROLE_CTRL_CC1_SHIFT) |
+			      (TCPC_ROLE_CTRL_CC_RD << TCPC_ROLE_CTRL_CC2_SHIFT));
 	if (ret < 0)
 		return -EIO;
 
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-				    FIELD_PREP(CCLPMODESEL, LOW_POWER_MODE_DISABLE));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+				    LOW_POWER_MODE_DISABLE);
 	if (ret < 0)
 		return -EIO;
 
@@ -454,11 +446,10 @@ int max77759_enable_contaminant_detection(struct max77759_plat *chip)
 	 * tunable: 1000mV/1000K thershold for water detection
 	 * tunable: 4.8s water cycle
 	 */
-	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL3,
-				    CCWTRDEB | CCWTRSEL | WTRCYCLE,
-				    FIELD_PREP(CCWTRDEB, CCWTRDEB_1MS)
-				    | FIELD_PREP(CCWTRSEL, CCWTRSEL_1V)
-				    | FIELD_PREP(WTRCYCLE, WTRCYCLE_4_8_S));
+	ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL3, CCWTRDEB_MASK | CCWTRSEL_MASK
+				    | WTRCYCLE_MASK, CCWTRDEB_1MS << CCWTRDEB_SHIFT |
+				    CCWTRSEL_1V << CCWTRSEL_SHIFT | WTRCYCLE_4_8_S <<
+				    WTRCYCLE_SHIFT);
 	if (ret < 0)
 		return -EIO;
 
@@ -473,9 +464,8 @@ int max77759_enable_contaminant_detection(struct max77759_plat *chip)
 
 	if (!contaminant->auto_ultra_low_power_mode_disabled) {
 		/* tunable: Periodic contaminant detection */
-		ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-					    FIELD_PREP(CCLPMODESEL,
-						       AUTO_ULTRA_LOW_POWER_MODE));
+		ret = max77759_update_bits8(regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+					    AUTO_ULTRA_LOW_POWER_MODE);
 		if (ret < 0)
 			return -EIO;
 	}
@@ -504,10 +494,11 @@ int max77759_enable_contaminant_detection(struct max77759_plat *chip)
 		}
 	}
 
-	ret = max77759_write8(regmap, TCPC_ROLE_CTRL,
-			      TCPC_ROLE_CTRL_DRP
-			      | FIELD_PREP(TCPC_ROLE_CTRL_CC1, TCPC_ROLE_CTRL_CC_RD)
-			      | FIELD_PREP(TCPC_ROLE_CTRL_CC2, TCPC_ROLE_CTRL_CC_RD));
+	ret = max77759_write8(regmap, TCPC_ROLE_CTRL, TCPC_ROLE_CTRL_DRP |
+			      (TCPC_ROLE_CTRL_CC_RD <<
+			       TCPC_ROLE_CTRL_CC1_SHIFT) |
+			      (TCPC_ROLE_CTRL_CC_RD <<
+			       TCPC_ROLE_CTRL_CC2_SHIFT));
 	if (ret < 0) {
 		logbuffer_log(chip->log, "[%s]: Enabling DRP failed ret:%d", __func__,
 			      ret);
@@ -547,11 +538,8 @@ void max77759_disable_auto_ultra_low_power_mode(struct max77759_plat *chip, bool
 		return;
 	}
 
-	ret = max77759_update_bits8(chip->data.regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL,
-				    FIELD_PREP(CCLPMODESEL,
-					       (disable
-						? LOW_POWER_MODE_DISABLE
-						: AUTO_ULTRA_LOW_POWER_MODE)));
+	ret = max77759_update_bits8(chip->data.regmap, TCPC_VENDOR_CC_CTRL2, CCLPMODESEL_MASK,
+				    disable ? LOW_POWER_MODE_DISABLE : AUTO_ULTRA_LOW_POWER_MODE);
 
 	logbuffer_log(chip->log, "Contaminant: Auto ultra low power mode %s ret:%d",
 		      disable ? "disable" : "enable", ret);

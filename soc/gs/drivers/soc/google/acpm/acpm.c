@@ -311,21 +311,15 @@ void exynos_acpm_reboot(void)
 }
 EXPORT_SYMBOL_GPL(exynos_acpm_reboot);
 
-void acpm_prepare_reboot(void)
-{
-	acpm_ipc_set_waiting_mode(BUSY_WAIT);
-
-	acpm_stop_log_and_dumpram();
-}
-EXPORT_SYMBOL_GPL(acpm_prepare_reboot);
-
 static void acpm_shutdown(struct platform_device *pdev)
 {
 	pr_info("%s...\n", __func__);
 
 	acpm_framework_debug_cmd_setting(exynos_acpm, ACPM_FRAMEWORK_COMMAND_DEBUG_NOTIFY_SHUTDOWN);
 
-	acpm_prepare_reboot();
+	acpm_ipc_set_waiting_mode(BUSY_WAIT);
+
+	acpm_stop_log_and_dumpram();
 }
 
 static int acpm_probe(struct platform_device *pdev)
@@ -357,6 +351,11 @@ static int acpm_probe(struct platform_device *pdev)
 	return ret;
 }
 
+static int acpm_remove(struct platform_device *pdev)
+{
+	return 0;
+}
+
 static const struct of_device_id acpm_ipc_match[] = {
 	{ .compatible = "google,gs-acpm-ipc" },
 	{},
@@ -365,6 +364,7 @@ MODULE_DEVICE_TABLE(of, acpm_ipc_match);
 
 static struct platform_driver samsung_acpm_ipc_driver = {
 	.probe	= acpm_ipc_probe,
+	.remove	= acpm_ipc_remove,
 	.driver	= {
 		.name = "gs-acpm-ipc",
 		.owner	= THIS_MODULE,
@@ -380,6 +380,7 @@ MODULE_DEVICE_TABLE(of, acpm_match);
 
 static struct platform_driver samsung_acpm_driver = {
 	.probe	= acpm_probe,
+	.remove	= acpm_remove,
 	.shutdown = acpm_shutdown,
 	.driver	= {
 		.name = "gs-acpm",

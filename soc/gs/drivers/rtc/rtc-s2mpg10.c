@@ -15,7 +15,7 @@
 #include <linux/regmap.h>
 #include <linux/platform_device.h>
 #include <linux/mfd/samsung/rtc-s2mpg10.h>
-#include <linux/mfd/samsung/s2mpg10-local.h>
+#include <linux/mfd/samsung/s2mpg10.h>
 #include <linux/mfd/samsung/s2mpg10-register.h>
 
 /*#define CONFIG_WEEKDAY_ALARM_ENABLE*/
@@ -757,7 +757,7 @@ err_rtc_init_reg:
 	return ret;
 }
 
-static void s2m_rtc_remove(struct platform_device *pdev)
+static int s2m_rtc_remove(struct platform_device *pdev)
 {
 	struct s2m_rtc_info *info = platform_get_drvdata(pdev);
 
@@ -769,6 +769,8 @@ static void s2m_rtc_remove(struct platform_device *pdev)
 		device_init_wakeup(&pdev->dev, false);
 #endif
 	mutex_destroy(&info->lock);
+
+	return 0;
 }
 
 static void s2m_rtc_shutdown(struct platform_device *pdev)

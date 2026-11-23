@@ -12,19 +12,17 @@
 #include <kernel/sched/pelt.h>
 
 #include "sched_priv.h"
-#include "sched_events.h"
 
 extern unsigned long cpu_util(int cpu);
 extern unsigned long task_util(struct task_struct *p);
-extern bool task_may_not_preempt(struct task_struct *task, int cpu);
 extern int cpu_is_idle(int cpu);
 extern int sched_cpu_idle(int cpu);
-extern bool get_prefer_high_cap(struct task_struct *p);
-
 extern int ___update_load_sum(u64 now, struct sched_avg *sa, unsigned long load,
 			      unsigned long runnable, int running);
 extern void ___update_load_avg(struct sched_avg *sa, unsigned long load);
 extern int get_cluster_enabled(int cluster);
+
+extern struct cpumask cpu_skip_mask_rt;
 
 /*****************************************************************************/
 /*                       Upstream Code Section                               */
@@ -35,7 +33,7 @@ extern int get_cluster_enabled(int cluster);
  * to make proper adjustment in vendor hook.
  */
 
-#if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
+#if IS_ENABLED(CONFIG_SMP)
 static inline bool should_honor_rt_sync(struct rq *rq, struct task_struct *p,
 					bool sync)
 {
@@ -69,15 +67,18 @@ static inline void rt_task_fits_capacity(struct task_struct *p, int cpu,
 	unsigned long uclamp_max = uclamp_eff_value_pixel_mod(p, UCLAMP_MAX);
 	unsigned long util = task_util(p);
 
-	if (get_prefer_high_cap(p) && cpu < pixel_cluster_start_cpu[1]) {
-		*fits = false;
-		*fits_original = false;
-		return;
-	}
-
 	*fits = util_fits_cpu(util, uclamp_min, uclamp_max, cpu);
 	*fits_original = capacity_orig_of(cpu) >= clamp(util, uclamp_min, uclamp_max) ||
-			 cpu >= pixel_cluster_start_cpu[2];
+			 cpu >= pixel_cluster_start_cpu[pixel_cluster_num - 1];
+}
+
+static inline bool
+task_may_not_preempt_pixel_mod(struct task_struct *task, int cpu)
+{
+	struct task_struct *cpu_ksoftirqd = per_cpu(ksoftirqd, cpu);
+
+	return cpu_busy_with_softirqs(cpu) &&
+	       (task == cpu_ksoftirqd || task_thread_info(task)->preempt_count & SOFTIRQ_MASK);
 }
 
 void check_migrate_rt_task(struct rq *rq, struct task_struct *p)
@@ -130,7 +131,6 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 	unsigned int exit_lat[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	bool task_fits[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	bool task_fits_original[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
-	bool overutilize[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	bool candidates[CONFIG_VH_SCHED_MAX_CPU_NR] = { 0 };
 	int cpu, best_cpu = -1;
 	unsigned long min_cpu_util;
@@ -140,8 +140,7 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 	struct cpuidle_state *idle;
 	int prev_cpu = task_cpu(p);
 	bool is_idle;
-	bool fit_and_non_overutilized_found = false, fit_and_overutilized_found = false;
-	bool fit_orig_and_non_overutilized_found = false, fit_orig_and_overutilized_found = false;
+	bool fit_cpu = false, fit_orig_cpu = false;
 	unsigned long rq_util_min, rq_util_max;
 
 	if (cpumask_weight(lowest_mask) == 1)
@@ -181,47 +180,42 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 			util[cpu] += task_util(p);
 
 		rt_task_fits_capacity(p, cpu, &task_fits[cpu], &task_fits_original[cpu]);
-		overutilize[cpu] = !util_fits_cpu(util[cpu],
-						  rq_util_min, rq_util_max, cpu);
+
+
+		// Make cpus in CPD state the least preferred
+		if (is_idle && !get_cluster_enabled(pixel_cpu_to_cluster[cpu])) {
+			cpu_importance[cpu] = UINT_MAX;
+			exit_lat[cpu] = pixel_cpd_exit_latency[pixel_cpu_to_cluster[cpu]];
+		}
+
+		if (cpumask_test_cpu(cpu, &cpu_skip_mask_rt))
+			cpu_importance[cpu] = UINT_MAX;
 
 		trace_sched_cpu_util_rt(cpu, capacity[cpu], capacity_of(cpu), util[cpu],
 					exit_lat[cpu], cpu_importance[cpu], task_fits[cpu],
-					task_fits_original[cpu], overutilize[cpu], is_idle);
+					task_fits_original[cpu], is_idle);
 
 		// To prefer idle cpu than non-idle cpu
 		if (is_idle)
 			util[cpu] = 0;
 
-		// Avoid single core cluster in CPD state
-		if (is_idle && !get_cluster_enabled(pixel_cpu_to_cluster[cpu]))
-			exit_lat[cpu] = pixel_cpd_exit_latency[pixel_cpu_to_cluster[cpu]];
-
-		if (task_fits[cpu]) {
-			fit_and_non_overutilized_found |= !overutilize[cpu];
-			fit_and_overutilized_found |= overutilize[cpu];
-		} else if (task_fits_original[cpu]) {
-			fit_orig_and_non_overutilized_found |= !overutilize[cpu];
-			fit_orig_and_overutilized_found |= overutilize[cpu];
-		}
+		if (task_fits[cpu])
+			fit_cpu = true;
+		else if (task_fits_original[cpu])
+			fit_orig_cpu = true;
 	}
 
 	// no CPU fits, select the biggest capacity CPU instead
-	if (!fit_and_non_overutilized_found && !fit_and_overutilized_found &&
-		!fit_orig_and_non_overutilized_found && !fit_orig_and_overutilized_found) {
+	if (!fit_cpu && !fit_orig_cpu) {
 		best_cpu = cpumask_last(lowest_mask);
 		rcu_read_unlock();
 		goto out;
 	}
 
 	for_each_cpu(cpu, lowest_mask) {
-		if (fit_and_non_overutilized_found && (overutilize[cpu] || !task_fits[cpu]))
+		if (fit_cpu && !task_fits[cpu])
 			continue;
-		else if (fit_and_overutilized_found && (!task_fits[cpu]))
-			continue;
-		else if (fit_orig_and_non_overutilized_found &&
-			(overutilize[cpu] || !task_fits_original[cpu]))
-			continue;
-		else if (fit_orig_and_overutilized_found && (!task_fits_original[cpu]))
+		else if (fit_orig_cpu && (!task_fits_original[cpu]))
 			continue;
 
 		candidates[cpu] = 1;
@@ -264,9 +258,10 @@ static int find_least_loaded_cpu(struct task_struct *p, struct cpumask *lowest_m
 		best_cpu = cpu;
 	}
 
-	/* Set cpus with the same least importance as backup */
+	/* Set cpus with importance less than or equal to 1024 as backup */
 	for_each_cpu(cpu, lowest_mask) {
-		if (candidates[cpu] && cpu_importance[cpu] == least_importance && cpu != best_cpu)
+		if (candidates[cpu] && cpu_importance[cpu] <= DEFAULT_IMPRATANCE_THRESHOLD &&
+		    cpu != best_cpu)
 			cpumask_set_cpu(cpu, backup_mask);
 	}
 
@@ -382,7 +377,7 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 	int target = -1;
 	bool sync = !!(wake_flags & WF_SYNC);
 	int this_cpu;
-	bool sync_wakeup = false;
+	bool sync_wakeup = false, prefer_high_cap = false;
 	struct cpumask backup_mask;
 	int i;
 	bool fits;
@@ -400,29 +395,35 @@ void rvh_select_task_rq_rt_pixel_mod(void *data, struct task_struct *p, int prev
 	this_cpu = smp_processor_id();
 	this_cpu_rq = cpu_rq(this_cpu);
 
-	rt_task_fits_capacity(p, this_cpu, &fits, &fits_original);
 	/*
 	 * Respect the sync flag as long as the task can run on this CPU.
 	 */
-	if (should_honor_rt_sync(this_cpu_rq, p, sync) &&
-	    cpumask_test_cpu(this_cpu, p->cpus_ptr) && fits_original &&
-	    atomic_read(&get_vendor_rq_struct(this_cpu_rq)->num_adpf_tasks) == 0) {
-		*new_cpu = this_cpu;
-		sync_wakeup = true;
-		goto out_unlock;
+	if (should_honor_rt_sync(this_cpu_rq, p, sync)) {
+		rt_task_fits_capacity(p, this_cpu, &fits, &fits_original);
+
+		if (cpumask_test_cpu(this_cpu, p->cpus_ptr) && fits_original &&
+			atomic_read(&get_vendor_rq_struct(this_cpu_rq)->num_adpf_tasks) == 0) {
+			*new_cpu = this_cpu;
+			sync_wakeup = true;
+			goto out_unlock;
+		}
 	}
+
+	prefer_high_cap = __get_prefer_high_cap(p) || (sync && this_cpu >= pixel_cluster_start_cpu[1]);
+
+	set_prefer_high_cap(p, prefer_high_cap);
 
 	target = find_lowest_rq(p, &backup_mask);
 
 	if (target != -1) {
 		tgt_task = READ_ONCE(cpu_rq(target)->curr);
-		if (task_may_not_preempt(tgt_task, target) ||
+		if (task_may_not_preempt_pixel_mod(tgt_task, target) ||
 			p->prio >= cpu_rq(target)->rt.highest_prio.curr) {
 			target = -1;
 
 			for_each_cpu(i, &backup_mask) {
 				tgt_task = READ_ONCE(cpu_rq(i)->curr);
-				if (task_may_not_preempt(tgt_task, i) ||
+				if (task_may_not_preempt_pixel_mod(tgt_task, i) ||
 					p->prio >= cpu_rq(i)->rt.highest_prio.curr) {
 					continue;
 				} else {
@@ -442,6 +443,8 @@ out_unlock:
 out:
 	trace_sched_select_task_rq_rt(p, task_util(p), prev_cpu, target, *new_cpu, sync_wakeup);
 
+	set_prefer_high_cap(p, false);
+
 	return;
 }
 
@@ -456,23 +459,14 @@ static int update_load_avg_se(u64 now, struct sched_entity *se, int running)
 	return 0;
 }
 
-void rvh_update_rt_rq_load_avg_pixel_mod(void *data, u64 now, struct rq *rq, struct task_struct *p,
-					 int running)
-{
-	unsigned long removed_util = 0;
-	u32 divider = get_pelt_divider(&rq->avg_rt);
+static void vrq_update_util_removed(struct rq *rq, u32 divider) {
+	/*
+	 * One or more rt tasks previously ran on this cpu got migrated to other cpus, need to
+	 * remove its/their loading from the rt util of rq.
+	 */
 	struct vendor_rq_struct *vrq = get_vendor_rq_struct(rq);
+	unsigned long removed_util = 0;
 
-	// RT task p got migrated to this cpu, add its load to the rt util of rq
-	if (!p->se.avg.last_update_time) {
-		p->se.avg.last_update_time = rq->avg_rt.last_update_time;
-		p->se.avg.util_sum = p->se.avg.util_avg * divider;
-		rq->avg_rt.util_avg += p->se.avg.util_avg;
-		rq->avg_rt.util_sum += p->se.avg.util_sum;
-	}
-
-	// One or more rt tasks previously ran on this cpu got migrated to other cpus, need to
-	// remove its/their loading from the rt util of rq.
 	if (vrq->util_removed) {
 		raw_spin_lock(&vrq->lock);
 		swap(vrq->util_removed, removed_util);
@@ -482,9 +476,32 @@ void rvh_update_rt_rq_load_avg_pixel_mod(void *data, u64 now, struct rq *rq, str
 		rq->avg_rt.util_sum = max_t(unsigned long, rq->avg_rt.util_sum,
 					    rq->avg_rt.util_avg * PELT_MIN_DIVIDER);
 	}
+}
+
+void rvh_update_rt_rq_load_avg_pixel_mod(void *data, u64 now, struct rq *rq, struct task_struct *p,
+					 int running)
+{
+	u32 divider = get_pelt_divider(&rq->avg_rt);
+
+	if (p->dl.flags & SCHED_FLAG_SUGOV) {
+		p->se.avg.util_sum = 0;
+		p->se.avg.util_avg = 0;
+		vrq_update_util_removed(rq, divider);
+		return;
+	}
+
+	if (!p->se.avg.last_update_time) {
+		// RT task p got migrated to this cpu, add its load to the rt util of rq
+		p->se.avg.last_update_time = rq->avg_rt.last_update_time;
+		p->se.avg.util_sum = p->se.avg.util_avg * divider;
+		rq->avg_rt.util_avg += p->se.avg.util_avg;
+		rq->avg_rt.util_sum += p->se.avg.util_sum;
+	}
+
+	vrq_update_util_removed(rq, divider);
 
 	// Update rt task util
-	update_load_avg_se(rq_clock_pelt(rq), &p->se, running);
+	update_load_avg_se(now, &p->se, running);
 }
 
 // For RT task only, used for task migration.
@@ -508,7 +525,7 @@ void rvh_set_task_cpu_pixel_mod(void *data, struct task_struct *p, unsigned int 
 void vh_dump_throttled_rt_tasks_mod(void *data, int cpu, u64 clock, ktime_t rt_period,
 				    u64 rt_runtime, s64 rt_period_timer_expires)
 {
-#ifdef CONFIG_SCHED_INFO
+#if IS_ENABLED(CONFIG_SCHED_INFO)
 	printk_deferred("RT %s (%d) run %llu ns over rt throttled threshold %llu ns on cpu %d",
 			current->comm,
 			current->pid,

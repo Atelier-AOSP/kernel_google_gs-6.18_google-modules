@@ -15,7 +15,6 @@
 #include <linux/usb/pd.h>
 #include <linux/usb/tcpm.h>
 #include <linux/usb/typec.h>
-#include <linux/usb/tcpci.h>
 
 #include "google_tcpci_shim.h"
 
@@ -28,7 +27,6 @@
 #define	VPPS_NEW_MIN_PERCENT			95
 #define	VPPS_VALID_MIN_MV			100
 #define	VSINKDISCONNECT_PD_MIN_PERCENT		90
-#define	VPPS_SHUTDOWN_MIN_PERCENT		85
 
 struct google_shim_tcpci_chip {
 	struct google_shim_tcpci *tcpci;
@@ -317,8 +315,7 @@ static int google_tcpci_shim_enable_auto_vbus_discharge(struct tcpc_dev *dev, bo
 static int google_tcpci_shim_set_auto_vbus_discharge_threshold(struct tcpc_dev *dev,
 							       enum typec_pwr_opmode mode,
 							       bool pps_active,
-							       u32 requested_vbus_voltage_mv,
-							       u32 apdo_min_voltage_mv)
+							       u32 requested_vbus_voltage_mv)
 {
 	struct google_shim_tcpci *tcpci = tcpc_to_tcpci(dev);
 	unsigned int pwr_ctrl, threshold = 0;
@@ -340,13 +337,9 @@ static int google_tcpci_shim_set_auto_vbus_discharge_threshold(struct tcpc_dev *
 		threshold = AUTO_DISCHARGE_DEFAULT_THRESHOLD_MV;
 	} else if (mode == TYPEC_PWR_MODE_PD) {
 		if (pps_active)
-			/*
-			 * To prevent disconnect when the source is in Current Limit Mode.
-			 * Set the threshold to the lowest possible voltage vPpsShutdown (min)
-			 */
-			threshold = VPPS_SHUTDOWN_MIN_PERCENT * apdo_min_voltage_mv / 100 -
-				    VSINKPD_MIN_IR_DROP_MV;
-
+			threshold = ((VPPS_NEW_MIN_PERCENT * requested_vbus_voltage_mv / 100) -
+				     VSINKPD_MIN_IR_DROP_MV - VPPS_VALID_MIN_MV) *
+				     VSINKDISCONNECT_PD_MIN_PERCENT / 100;
 		else
 			threshold = ((VSRC_NEW_MIN_PERCENT * requested_vbus_voltage_mv / 100) -
 				     VSINKPD_MIN_IR_DROP_MV - VSRC_VALID_MIN_MV) *
@@ -460,6 +453,9 @@ static bool google_tcpci_shim_is_vbus_vsafe0v(struct tcpc_dev *tcpc)
 	struct google_shim_tcpci *tcpci = tcpc_to_tcpci(tcpc);
 	unsigned int reg;
 	int ret;
+
+	if (tcpci->data->is_vbus_vsafe0v)
+		return tcpci->data->is_vbus_vsafe0v(tcpci, tcpci->data);
 
 	ret = regmap_read(tcpci->regmap, TCPC_EXTENDED_STATUS, &reg);
 	if (ret < 0)
@@ -692,7 +688,7 @@ irqreturn_t google_tcpci_shim_irq(struct google_shim_tcpci *tcpci)
 		/* Read complete, clear RX status alert bit */
 		google_tcpci_shim_write16(tcpci, TCPC_ALERT, TCPC_ALERT_RX_STATUS);
 
-		tcpm_pd_receive(tcpci->port, &msg, TCPC_TX_SOP);
+		tcpm_pd_receive(tcpci->port, &msg);
 	}
 
 	if (tcpci->data->vbus_vsafe0v && (status & TCPC_ALERT_EXTENDED_STATUS)) {
@@ -811,7 +807,8 @@ void google_tcpci_shim_unregister_port(struct google_shim_tcpci *tcpci)
 }
 EXPORT_SYMBOL_GPL(google_tcpci_shim_unregister_port);
 
-static int google_tcpci_shim_probe(struct i2c_client *client)
+static int google_tcpci_shim_probe(struct i2c_client *client,
+				   const struct i2c_device_id *i2c_id)
 {
 	struct google_shim_tcpci_chip *chip;
 	int err;

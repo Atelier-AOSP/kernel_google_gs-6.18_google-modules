@@ -33,6 +33,7 @@
 #include <linux/debugfs.h>
 #include <linux/cpuhotplug.h>
 #include <linux/part_stat.h>
+#include <soc/google/meminfo.h>
 
 #include "zram_drv.h"
 
@@ -298,7 +299,7 @@ static void mark_idle(struct zram *zram, ktime_t cutoff)
 		zram_slot_lock(zram, index);
 		if (zram_allocated(zram, index) &&
 				!zram_test_flag(zram, index, ZRAM_UNDER_WB)) {
-#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+#ifdef CONFIG_ZRAM_GS_MEMORY_TRACKING
 			is_idle = !cutoff || ktime_after(cutoff, zram->table[index].ac_time);
 #endif
 			if (is_idle)
@@ -322,7 +323,7 @@ static ssize_t idle_store(struct device *dev,
 		 */
 		u64 age_sec;
 
-		if (IS_ENABLED(CONFIG_ZRAM_MEMORY_TRACKING) && !kstrtoull(buf, 0, &age_sec))
+		if (IS_ENABLED(CONFIG_ZRAM_GS_MEMORY_TRACKING) && !kstrtoull(buf, 0, &age_sec))
 			cutoff_time = ktime_sub(ktime_get_boottime(),
 					ns_to_ktime(age_sec * NSEC_PER_SEC));
 		else
@@ -346,7 +347,7 @@ out:
 	return rv;
 }
 
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 static ssize_t writeback_limit_enable_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
@@ -864,7 +865,7 @@ static int read_from_bdev(struct zram *zram, struct bio_vec *bvec,
 static void free_block_bdev(struct zram *zram, unsigned long blk_idx) {};
 #endif
 
-#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+#ifdef CONFIG_ZRAM_GS_MEMORY_TRACKING
 
 static struct dentry *zram_debugfs_root;
 
@@ -1115,7 +1116,7 @@ static ssize_t mm_stat_show(struct device *dev,
 	return ret;
 }
 
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 #define FOUR_K(x) ((x) * (1 << (PAGE_SHIFT - 12)))
 static ssize_t bd_stat_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -1155,7 +1156,7 @@ static ssize_t debug_stat_show(struct device *dev,
 
 static DEVICE_ATTR_RO(io_stat);
 static DEVICE_ATTR_RO(mm_stat);
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 static DEVICE_ATTR_RO(bd_stat);
 #endif
 static DEVICE_ATTR_RO(debug_stat);
@@ -1239,7 +1240,7 @@ static void zram_free_page(struct zram *zram, size_t index)
 {
 	unsigned long handle;
 
-#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+#ifdef CONFIG_ZRAM_GS_MEMORY_TRACKING
 	zram->table[index].ac_time = 0;
 #endif
 	if (zram_test_flag(zram, index, ZRAM_IDLE))
@@ -1767,7 +1768,7 @@ static DEVICE_ATTR_WO(mem_used_max);
 static DEVICE_ATTR_WO(idle);
 static DEVICE_ATTR_RW(max_comp_streams);
 static DEVICE_ATTR_RW(comp_algorithm);
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 static DEVICE_ATTR_RW(backing_dev);
 static DEVICE_ATTR_WO(writeback);
 static DEVICE_ATTR_RW(writeback_limit);
@@ -1784,7 +1785,7 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_idle.attr,
 	&dev_attr_max_comp_streams.attr,
 	&dev_attr_comp_algorithm.attr,
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 	&dev_attr_backing_dev.attr,
 	&dev_attr_writeback.attr,
 	&dev_attr_writeback_limit.attr,
@@ -1792,7 +1793,7 @@ static struct attribute *zram_disk_attrs[] = {
 #endif
 	&dev_attr_io_stat.attr,
 	&dev_attr_mm_stat.attr,
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 	&dev_attr_bd_stat.attr,
 #endif
 	&dev_attr_debug_stat.attr,
@@ -1826,7 +1827,7 @@ static int zram_add(void)
 	device_id = ret;
 
 	init_rwsem(&zram->init_lock);
-#ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_GS_WRITEBACK
 	spin_lock_init(&zram->wb_limit_lock);
 #endif
 
@@ -2031,6 +2032,36 @@ static void destroy_devices(void)
 	unregister_blkdev(zram_major, "zram");
 }
 
+static int zram_meminfo_cb(int id, void *ptr, void *data)
+{
+	struct zram *zram = (struct zram *)ptr;
+	unsigned long pages = 0;
+
+	down_read(&zram->init_lock);
+	if (init_done(zram))
+		pages = zs_get_total_pages(zram->mem_pool);
+	up_read(&zram->init_lock);
+	*(unsigned long *)data += pages;
+
+	return 0;
+}
+
+static unsigned long zram_meminfo_size(void *private)
+{
+	unsigned long pages = 0;
+
+	mutex_lock(&zram_index_mutex);
+	idr_for_each(&zram_index_idr, &zram_meminfo_cb, &pages);
+	mutex_unlock(&zram_index_mutex);
+
+	return pages << (PAGE_SHIFT - 10);
+}
+
+static struct meminfo zram_meminfo = {
+	.name = "Zram",
+	.size_kb = zram_meminfo_size,
+};
+
 static int __init zram_init(void)
 {
 	int ret;
@@ -2059,6 +2090,8 @@ static int __init zram_init(void)
 			goto out_error;
 		num_devices--;
 	}
+
+	register_meminfo(&zram_meminfo);
 
 	return 0;
 

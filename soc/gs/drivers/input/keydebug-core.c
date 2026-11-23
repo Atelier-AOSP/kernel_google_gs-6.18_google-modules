@@ -304,7 +304,7 @@ err_get_pdata_fail:
 	return ret;
 }
 
-static void keydebug_remove(struct platform_device *pdev)
+static int keydebug_remove(struct platform_device *pdev)
 {
 	struct keydebug_platform_data *pdata = dev_get_platdata(&pdev->dev);
 
@@ -314,6 +314,7 @@ static void keydebug_remove(struct platform_device *pdev)
 	if (kdbg_wq)
 		destroy_workqueue(kdbg_wq);
 	probe_cnt = 0;
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -321,6 +322,7 @@ static const struct of_device_id keydebug_match_table[] = {
 	{ .compatible = KEYDEBUG_NAME},
 	{},
 };
+MODULE_DEVICE_TABLE(of, keydebug_match_table);
 #else
 #define keydebug_match_table NULL
 #endif

@@ -142,6 +142,7 @@ static struct samsung_dma_heap *__samsung_heap_add(struct device *dev, void *pri
 	struct samsung_dma_heap *heap;
 	unsigned int alignment = PAGE_SIZE, order, protid = 0;
 	struct dma_heap_export_info exp_info;
+	struct device *dma_heap_dev;
 	const char *name;
 	char *heap_name;
 
@@ -165,7 +166,7 @@ static struct samsung_dma_heap *__samsung_heap_add(struct device *dev, void *pri
 	}
 
 	of_property_read_u32(dev->of_node, "dma-heap,alignment", &alignment);
-	order = min_t(unsigned int, get_order(alignment), MAX_PAGE_ORDER);
+	order = min_t(unsigned int, get_order(alignment), MAX_ORDER);
 
 	heap = devm_kzalloc(dev, sizeof(*heap), GFP_KERNEL);
 	if (!heap)
@@ -199,7 +200,16 @@ static struct samsung_dma_heap *__samsung_heap_add(struct device *dev, void *pri
 
 	pr_info("Registered %s dma-heap successfully\n", heap_name);
 
-	dma_coerce_mask_and_coherent(dma_heap_get_dev(heap->dma_heap), DMA_BIT_MASK(36));
+	dma_heap_dev = dma_heap_get_dev(heap->dma_heap);
+
+	dma_coerce_mask_and_coherent(dma_heap_dev, DMA_BIT_MASK(36));
+
+	/*
+	 * Manually assign dma_parms because dma_heap_add() creates a
+	 * raw device where this pointer is NULL.
+	 */
+	dma_heap_dev->dma_parms = &heap->dma_parms;
+	dma_set_max_seg_size(dma_heap_dev, UINT_MAX);
 
 	return heap;
 }
@@ -273,7 +283,7 @@ heap_put:
 	return ret;
 }
 
-struct dma_buf *samsung_export_dmabuf(struct samsung_dma_buffer *buffer, u32 fd_flags)
+struct dma_buf *samsung_export_dmabuf(struct samsung_dma_buffer *buffer, unsigned long fd_flags)
 {
 	DEFINE_SAMSUNG_DMA_BUF_EXPORT_INFO(exp_info, buffer->heap->name);
 	struct dma_buf *dmabuf;
@@ -370,18 +380,6 @@ void trusty_register_dma_buf_callbacks(void)
 #endif
 }
 
-unsigned long dma_heap_inuse_pages(void)
-{
-	return dma_heap_system_inuse_pages() + dma_heap_gcma_inuse_pages();
-}
-EXPORT_SYMBOL_GPL(dma_heap_inuse_pages);
-
-unsigned long dma_heap_pool_pages(void)
-{
-	return dma_heap_system_pool_pages();
-}
-EXPORT_SYMBOL_GPL(dma_heap_pool_pages);
-
 static int __init samsung_dma_heap_init(void)
 {
 	int ret;
@@ -435,6 +433,5 @@ static void __exit samsung_dma_heap_exit(void)
 module_init(samsung_dma_heap_init);
 module_exit(samsung_dma_heap_exit);
 MODULE_DESCRIPTION("DMA-BUF Samsung Heap");
-MODULE_IMPORT_NS("DMA_BUF");
-MODULE_IMPORT_NS("DMA_BUF_HEAP");
+MODULE_IMPORT_NS(DMA_BUF);
 MODULE_LICENSE("GPL v2");

@@ -21,8 +21,8 @@
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
 #include <linux/bitmap.h>
-#include <linux/kernel_stat.h>
 #include <trace/hooks/systrace.h>
+#include <linux/kernel_stat.h>
 #include <soc/google/exynos-debug.h>
 #include <soc/google/debug-snapshot.h>
 
@@ -156,6 +156,12 @@ static int plugins_init(struct device_node *node)
 				base_addr += offset;
 			}
 
+			if (acpm_ipc->initdata->fvmap) {
+				base_addr = acpm_srambase;
+				offset = acpm_ipc->initdata->fvmap;
+				base_addr += offset;
+			}
+
 			fvmap_base_address = base_addr;
 		}
 	}
@@ -239,7 +245,7 @@ static void acpm_log_print_helper(unsigned int head, unsigned int arg0,
 		id = (head >> LOG_ID_SHIFT) & 0xf;
 		is_raw = (head >> LOG_IS_RAW_SHIFT) & 0x1;
 		if (is_raw) {
-			pr_info("[ACPM_FW] : id:%u, %x, %x, %x\n",
+			pr_debug("[ACPM_FW] : id:%u, %x, %x, %x\n",
 				id, arg0, arg1, arg2);
 		} else {
 			time = ((u64) arg0 << 24) | ((u64) head & 0xffffff);
@@ -247,7 +253,7 @@ static void acpm_log_print_helper(unsigned int head, unsigned int arg0,
 			time = (time * APM_SYSTICK_PERIOD_US) / 1000;
 			str = (char *) acpm_srambase + (arg1 & 0xffffff);
 
-			pr_info("[ACPM_FW] : %llu id:%u, %s, %x\n",
+			pr_debug("[ACPM_FW] : %llu id:%u, %s, %x\n",
 				time, id, str, arg2);
 		}
 	}
@@ -291,8 +297,8 @@ static void acpm_log_print(void)
 {
 	mutex_lock(&print_log_mutex);
 	if (acpm_debug->debug_log_level >= 2)
-		acpm_log_print_buff(&acpm_debug->preempt);
-	acpm_log_print_buff(&acpm_debug->normal);
+		acpm_log_print_buff(&acpm_debug->normal);
+	acpm_log_print_buff(&acpm_debug->preempt);
 	mutex_unlock(&print_log_mutex);
 }
 
@@ -592,12 +598,13 @@ EXPORT_SYMBOL_GPL(acpm_ipc_send_data_sync);
 #define arch_irq_stat() 0
 #endif
 
+extern int nr_irqs;
+
 static void acpm_alloc_irq_info(bool usage)
 {
 	kfree(irq_info);
 	if (usage)
-		irq_info = kcalloc(irq_get_nr_irqs(),
-				   sizeof(struct cpu_irq_info), GFP_KERNEL);
+		irq_info = kcalloc(nr_irqs, sizeof(struct cpu_irq_info), GFP_KERNEL);
 	else
 		irq_info = NULL;
 }
@@ -623,7 +630,7 @@ static void cpu_irq_info_dump(u32 retry)
 	for_each_irq_nr(i) {
 		struct irq_data *data;
 		struct irq_desc *desc;
-		unsigned int irq_cnt = 0, delta;
+		unsigned int irq_stat = 0, delta;
 		const char *name;
 
 		data = irq_get_irq_data(i);
@@ -635,9 +642,9 @@ static void cpu_irq_info_dump(u32 retry)
 			continue;
 
 		for_each_possible_cpu(cpu)
-			irq_cnt += per_cpu(desc->kstat_irqs->cnt, cpu);
+			irq_stat += *per_cpu_ptr(desc->kstat_irqs, cpu);
 
-		if (!irq_cnt)
+		if (!irq_stat)
 			continue;
 
 		if (desc->action && desc->action->name)
@@ -648,10 +655,10 @@ static void cpu_irq_info_dump(u32 retry)
 		if (irq_info && retry == 1) {
 			irq_info[i].irq_num = i;
 			irq_info[i].hwirq_num = desc->irq_data.hwirq;
-			irq_info[i].irq_stat = irq_cnt;
+			irq_info[i].irq_stat = irq_stat;
 			irq_info[i].name = name;
 		} else if (irq_info && retry == 5) {
-			delta = irq_cnt - irq_info[i].irq_stat;
+			delta = irq_stat - irq_info[i].irq_stat;
 			if (delta > 0) {
 				pr_info("irq-%-4d(hwirq-%-3d) delta of irqs: %8u %s\n",
 					i, (int)desc->irq_data.hwirq, delta, name);
@@ -663,24 +670,10 @@ static void cpu_irq_info_dump(u32 retry)
 
 static void acpm_ktop_release(void)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&acpm_debug->lock, flags);
 	if (acpm_debug->ktop_cxt) {
 		kernel_top_destroy(acpm_debug->ktop_cxt);
 		acpm_debug->ktop_cxt = NULL;
 	}
-	spin_unlock_irqrestore(&acpm_debug->lock, flags);
-}
-
-static void acpm_ktop_init(void)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&acpm_debug->lock, flags);
-	acpm_debug->ktop_cxt = NULL;
-	kernel_top_init(acpm_ipc->dev, &acpm_debug->ktop_cxt);
-	spin_unlock_irqrestore(&acpm_debug->lock, flags);
 }
 
 int __acpm_ipc_send_data(unsigned int channel_id, struct ipc_config *cfg, bool w_mode)
@@ -814,13 +807,15 @@ retry:
 
 					cpu_irq_info_dump(retry_cnt);
 					if (retry_cnt == 1) {
+						acpm_debug->ktop_cxt = NULL;
+						kernel_top_init(acpm_ipc->dev,
+								&acpm_debug->ktop_cxt);
+
 						acpm_debug->debug_log_level =
 							acpm_debug->retry_log ?
 								2 : saved_debug_log_level;
 						acpm_log_print();
 						acpm_debug->debug_log_level = saved_debug_log_level;
-					} else if (retry_cnt == 2) {
-						acpm_ktop_init();
 					}
 					++retry_cnt;
 
@@ -846,11 +841,8 @@ retry:
 			pr_err("%s Timeout error! now = %llu timeout = %llu ch:%u s:%u bitmap:%lx\n",
 			       __func__, now, timeout, channel->id, seq_num,
 			       channel->bitmap_seqnum[0]);
-
-			acpm_debug->debug_log_level = 2;
-			acpm_log_print();
-			acpm_debug->debug_log_level = saved_debug_log_level;
-
+			if (acpm_debug->ktop_cxt)
+				kernel_top_print(acpm_debug->ktop_cxt);
 			acpm_ramdump();
 			dump_stack();
 			dbg_snapshot_do_dpm_policy(acpm_ipc->panic_action, "acpm_ipc timeout");
@@ -900,7 +892,6 @@ static int log_buffer_init(struct device *dev, struct device_node *node)
 		return PTR_ERR(acpm_debug);
 
 	base = acpm_ipc->sram_base;
-	acpm_debug->time_index = base + acpm_ipc->initdata->ktime_index;
 	acpm_debug->normal.log_buff_rear = acpm_ipc->sram_base +
 	    acpm_ipc->initdata->log_buf_rear;
 	acpm_debug->normal.log_buff_front = acpm_ipc->sram_base +
@@ -946,8 +937,6 @@ static int log_buffer_init(struct device *dev, struct device_node *node)
 
 	pr_info("[ACPM] acpm framework SRAM dump to dram base: 0x%llx\n",
 		virt_to_phys(acpm_debug->dump_dram_base));
-
-	__raw_writel(0xffffffff, acpm_debug->time_index);
 
 	spin_lock_init(&acpm_debug->lock);
 
@@ -1146,3 +1135,52 @@ int acpm_ipc_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "acpm_ipc probe done.\n");
 	return ret;
 }
+
+int acpm_ipc_remove(struct platform_device *pdev)
+{
+	return 0;
+}
+
+bool acpm_ipc_get_rx_buffer_properties(unsigned int channel_id, void __iomem **base,
+				       unsigned int *size)
+{
+	struct acpm_ipc_ch *channel;
+
+	if (channel_id < acpm_ipc->num_channels) {
+		channel = &acpm_ipc->channel[channel_id];
+		if (channel->type == TYPE_BUFFER) {
+			*base = channel->rx_ch.base;
+			*size = channel->rx_ch.size * channel->rx_ch.len;
+
+			return true;
+		}
+	}
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(acpm_ipc_get_rx_buffer_properties);
+
+bool acpm_ipc_get_tx_buffer_properties(unsigned int channel_id, void __iomem **base,
+				       unsigned int *size)
+{
+	struct acpm_ipc_ch *channel;
+
+	if (channel_id < acpm_ipc->num_channels) {
+		channel = &acpm_ipc->channel[channel_id];
+		if (channel->type == TYPE_BUFFER) {
+			*base = channel->tx_ch.base;
+			*size = channel->tx_ch.size * channel->tx_ch.len;
+
+			return true;
+		}
+	}
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(acpm_ipc_get_tx_buffer_properties);
+
+void acpm_ipc_ring_doorbell(unsigned int channel_id)
+{
+	apm_interrupt_gen(channel_id);
+}
+EXPORT_SYMBOL_GPL(acpm_ipc_ring_doorbell);

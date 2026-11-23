@@ -10,13 +10,11 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/of_irq.h>
-#include <linux/overflow.h>
 #include <linux/pm.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
@@ -48,7 +46,7 @@ struct power_keys_drvdata {
 	struct i2c_client *pmm_i2c;
 	int irq_pwronr;
 	int irq_pwronf;
-	struct power_button_data button_data[];
+	struct power_button_data button_data[0];
 };
 
 static int power_keys_wake_lock_timeout(struct device *dev, long timeout)
@@ -184,8 +182,7 @@ power_keys_get_devtree_pdata(struct s2mpg12_dev *iodev)
 {
 	#define S2MPG12_SUPPORT_KEY_NUM	(1)
 	struct device *dev = iodev->dev;
-	struct device_node *mfd_np;
-	struct device_node *key_np __free(device_node) = NULL;
+	struct device_node *mfd_np, *key_np, *pp;
 	struct power_keys_platform_data *pdata;
 	struct power_keys_button *button;
 	int error, nbuttons, i;
@@ -204,8 +201,6 @@ power_keys_get_devtree_pdata(struct s2mpg12_dev *iodev)
 		goto err_out;
 	}
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(mfd_np);
 	key_np = of_find_node_by_name(mfd_np, "s2mpg12-keys");
 	if (!key_np) {
 		dev_err(dev, "could not find current_node\n");
@@ -232,7 +227,7 @@ power_keys_get_devtree_pdata(struct s2mpg12_dev *iodev)
 	pdata->nbuttons = nbuttons;
 
 	i = 0;
-	for_each_child_of_node_scoped(key_np, pp) {
+	for_each_child_of_node(key_np, pp) {
 		button = &pdata->buttons[i++];
 		if (of_property_read_u32(pp, "linux,code", &button->code)) {
 			error = -EINVAL;
@@ -358,7 +353,7 @@ power_keys_set_drvdata(struct platform_device *pdev,
 	struct device *dev = &pdev->dev;
 	size_t size;
 
-	size = struct_size(ddata, button_data, pdata->nbuttons);
+	size = sizeof(*ddata) + pdata->nbuttons * sizeof(struct power_button_data);
 	ddata = devm_kzalloc(dev, size, GFP_KERNEL);
 	if (!ddata)
 		return ERR_PTR(-ENOMEM);

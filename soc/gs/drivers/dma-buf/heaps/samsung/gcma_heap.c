@@ -32,9 +32,18 @@
  * to match with the sizes often found in IOMMUs. Using high order pages instead
  * of order 0 pages can significantly improve the performance of many IOMMUs
  * by reducing TLB pressure and time spent updating page tables.
+ *
+ * Note: When the order is 0, the minimum allocation is PAGE_SIZE. The possible
+ * page sizes for ARM devices could be 4K, 16K and 64K.
  */
-static const unsigned int buddy_pages_orders[] = {9, 8, 4, 0};
-static const unsigned int gcma_pages_orders[] = {4};
+#define ORDER_2M (21 - PAGE_SHIFT)
+#define ORDER_1M (20 - PAGE_SHIFT)
+#define ORDER_64K (16 - PAGE_SHIFT)
+#define ORDER_FOR_PAGE_SIZE (0)
+
+static const unsigned int buddy_pages_orders[] = {
+	ORDER_2M, ORDER_1M, ORDER_64K, ORDER_FOR_PAGE_SIZE};
+static const unsigned int gcma_pages_orders[] = {ORDER_64K};
 
 struct heap_pages {
   struct list_head pages_list;
@@ -61,7 +70,7 @@ static inline bool page_is_gcma(struct page *page)
 	return page_private(page) ? true : false;
 }
 
-static struct page *gcma_alloc(struct gcma_heap *gcma_heap, unsigned long size)
+struct page *gcma_alloc(struct gcma_heap *gcma_heap, unsigned long size)
 {
 	struct gen_pool *pool = gcma_heap->pool;
 	phys_addr_t paddr;
@@ -86,7 +95,7 @@ static struct page *gcma_alloc(struct gcma_heap *gcma_heap, unsigned long size)
 	return page;
 }
 
-static void gcma_free(struct gen_pool *pool, struct page *page)
+void gcma_free(struct gen_pool *pool, struct page *page)
 {
 	unsigned long size, pfn;
 
@@ -265,10 +274,10 @@ static struct dma_buf *gcma_heap_allocate(struct dma_heap *heap, unsigned long l
 	heap_cache_flush(buffer);
 
 	if (is_secure_heap) {
+		unsigned long paddr = page_to_phys(sg_page(buffer->sg_table.sgl));
+
 		buffer->priv = samsung_dma_buffer_protect(
-				buffer, len, heap_pages.count,
-				page_to_phys(list_first_entry(&heap_pages.pages_list,
-							     struct page, lru)));
+				buffer, len, heap_pages.count, paddr);
 		if (IS_ERR(buffer->priv)) {
 			ret = PTR_ERR(buffer->priv);
 			buffer->priv = NULL;
@@ -345,7 +354,6 @@ static int gcma_heap_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	rmem = of_reserved_mem_lookup(rmem_np);
-	of_node_put(rmem_np);
 	if (!rmem) {
 		perrdev(&pdev->dev, "memory-region handle not found");
 		return -ENODEV;

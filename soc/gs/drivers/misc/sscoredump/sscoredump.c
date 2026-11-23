@@ -647,15 +647,13 @@ ATTRIBUTE_GROUPS(sscd_dev);
 /**
  * class attributes
  */
-static ssize_t enabled_show(const struct class *class,
-			    const struct class_attribute *attr,
+static ssize_t enabled_show(struct class *class, struct class_attribute *attr,
 			    char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%d\n", sscd_enabled);
 }
 
-static ssize_t enabled_store(const struct class *class,
-			     const struct class_attribute *attr,
+static ssize_t enabled_store(struct class *class, struct class_attribute *attr,
 			     const char *buf, size_t count)
 {
 	int status;
@@ -668,15 +666,13 @@ static ssize_t enabled_store(const struct class *class,
 	return status ? status : count;
 }
 
-static ssize_t level_show(const struct class *class,
-			  const struct class_attribute *attr,
+static ssize_t level_show(struct class *class, struct class_attribute *attr,
 			  char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%d\n", sscd_level);
 }
 
-static ssize_t level_store(const struct class *class,
-			   const struct class_attribute *attr,
+static ssize_t level_store(struct class *class, struct class_attribute *attr,
 			   const char *buf, size_t count)
 {
 	int status;
@@ -689,8 +685,7 @@ static ssize_t level_store(const struct class *class,
 	return status ? status : count;
 }
 
-static ssize_t clients_show(const struct class *class,
-			    const struct class_attribute *attr,
+static ssize_t clients_show(struct class *class, struct class_attribute *attr,
 			    char *buf)
 {
 	int n = 0;
@@ -720,6 +715,7 @@ static struct attribute *class_sscd_attrs[] = {
 ATTRIBUTE_GROUPS(class_sscd);
 
 static struct class sscd_class = {
+	.owner		= THIS_MODULE,
 	.name		= SSCD_NAME,
 	.class_groups	= class_sscd_groups,
 };
@@ -767,7 +763,7 @@ static int sscoredump_probe(struct platform_device *pdev)
 	sdev->crash_hdr.header_size = sizeof(struct crashinfo_img_hdr);
 
 	/* initialize a new device of our class */
-	minor = ida_alloc_max(&sscd_ida, SSCD_MAX_DEVS, GFP_KERNEL);
+	minor = ida_simple_get(&sscd_ida, 0, SSCD_MAX_DEVS, GFP_KERNEL);
 	if (minor < 0) {
 		pr_err("unable to reserve dev_minor\n");
 		goto fail1;
@@ -806,22 +802,25 @@ static int sscoredump_probe(struct platform_device *pdev)
 	return 0;
 
 fail2:
-	ida_free(&sscd_ida, minor);
+	ida_simple_remove(&sscd_ida, minor);
 fail1:
 	kfree(sdev);
 
 	return -EAGAIN;
 }
 
-static void sscoredump_remove(struct platform_device *pdev)
+static int sscoredump_remove(struct platform_device *pdev)
 {
 	struct sscd_device *sdev = platform_get_drvdata(pdev);
 	int minor;
 
 	dev_info(&sdev->dev, "remove");
 
-	if (!sdev && atomic_read(&sdev->report_active))
-		return;
+	if (!sdev)
+		return -ENODEV;
+
+	if (atomic_read(&sdev->report_active))
+		return -EBUSY;
 
 	minor = MINOR(sdev->chrdev.dev);
 
@@ -830,9 +829,11 @@ static void sscoredump_remove(struct platform_device *pdev)
 	mutex_unlock(&sscd_mutex);
 
 	cdev_device_del(&sdev->chrdev, &sdev->dev);
-	ida_free(&sscd_ida, minor);
+	ida_simple_remove(&sscd_ida, minor);
 
 	put_device(&sdev->dev);
+
+	return 0;
 }
 
 static struct platform_driver sscoredump_driver = {

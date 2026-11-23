@@ -339,6 +339,7 @@ static int irq_setup(struct gf_dev *gf_dev)
 		pr_err("failed to request IRQ:%d\n", gf_dev->irq);
 		return status;
 	}
+	enable_irq_wake(gf_dev->irq);
 	gf_dev->irq_enabled = 1;
 
 	return status;
@@ -543,11 +544,13 @@ static int gf_open(struct inode *inode, struct file *filp)
 
 	mutex_lock(&gf_spi_lock);
 
-	list_for_each_entry (gf_dev, &device_list, device_entry) {
-		if (gf_dev->devt == inode->i_rdev) {
-			pr_info("Found\n");
-			status = 0;
-			break;
+	if (!list_empty(&device_list)) {
+		list_for_each_entry(gf_dev, &device_list, device_entry) {
+			if (gf_dev->devt == inode->i_rdev) {
+				pr_info("Found\n");
+				status = 0;
+				break;
+			}
 		}
 	}
 
@@ -734,9 +737,9 @@ error_dev:
 }
 
 #if defined(USE_SPI_BUS)
-static void gf_remove(struct spi_device *spi)
+static int gf_remove(struct spi_device *spi)
 #elif defined(USE_PLATFORM_BUS)
-static void gf_remove(struct platform_device *pdev)
+static int gf_remove(struct platform_device *pdev)
 #endif
 {
 	struct gf_dev *gf_dev = &gf;
@@ -752,12 +755,15 @@ static void gf_remove(struct platform_device *pdev)
 	device_destroy(gf_class, gf_dev->devt);
 	clear_bit(MINOR(gf_dev->devt), minors);
 	mutex_unlock(&gf_spi_lock);
+
+	return 0;
 }
 
 static const struct of_device_id gx_match_table[] = {
 	{ .compatible = GF_SPIDEV_NAME },
 	{},
 };
+MODULE_DEVICE_TABLE(of, gx_match_table);
 
 #if defined(USE_SPI_BUS)
 static struct spi_driver gf_driver = {
@@ -790,7 +796,7 @@ static int __init gf_init(void)
 		return status;
 	}
 	SPIDEV_MAJOR = status;
-	gf_class = class_create(CLASS_NAME);
+	gf_class = class_create(THIS_MODULE, CLASS_NAME);
 	if (IS_ERR(gf_class)) {
 		unregister_chrdev(SPIDEV_MAJOR, gf_driver.driver.name);
 		pr_warn("Failed to create class.\n");

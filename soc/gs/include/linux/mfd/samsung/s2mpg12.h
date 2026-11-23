@@ -69,42 +69,42 @@ struct s2mpg12_platform_data {
 	struct s2mpg12_regulator_data *regulators;
 	struct sec_opmode_data *opmode;
 
-	struct gpio_desc *smpl_warn_pin;
+	int smpl_warn_pin;
 	unsigned int smpl_warn_lvl;
 	unsigned int smpl_warn_hys;
 	unsigned int smpl_warn_lbdt;
 
-	struct gpio_desc *b2_ocp_warn_pin;
+	int b2_ocp_warn_pin;
 	unsigned int b2_ocp_warn_en;
 	unsigned int b2_ocp_warn_cnt;
 	unsigned int b2_ocp_warn_dvs_mask;
 	unsigned int b2_ocp_warn_lvl;
 
-	struct gpio_desc *b3_ocp_warn_pin;
+	int b3_ocp_warn_pin;
 	unsigned int b3_ocp_warn_en;
 	unsigned int b3_ocp_warn_cnt;
 	unsigned int b3_ocp_warn_dvs_mask;
 	unsigned int b3_ocp_warn_lvl;
 
-	struct gpio_desc *b10_ocp_warn_pin;
+	int b10_ocp_warn_pin;
 	unsigned int b10_ocp_warn_en;
 	unsigned int b10_ocp_warn_cnt;
 	unsigned int b10_ocp_warn_dvs_mask;
 	unsigned int b10_ocp_warn_lvl;
 
-	struct gpio_desc *b2_soft_ocp_warn_pin;
+	int b2_soft_ocp_warn_pin;
 	unsigned int b2_soft_ocp_warn_en;
 	unsigned int b2_soft_ocp_warn_cnt;
 	unsigned int b2_soft_ocp_warn_dvs_mask;
 	unsigned int b2_soft_ocp_warn_lvl;
 
-	struct gpio_desc *b3_soft_ocp_warn_pin;
+	int b3_soft_ocp_warn_pin;
 	unsigned int b3_soft_ocp_warn_en;
 	unsigned int b3_soft_ocp_warn_cnt;
 	unsigned int b3_soft_ocp_warn_dvs_mask;
 	unsigned int b3_soft_ocp_warn_lvl;
 
-	struct gpio_desc *b10_soft_ocp_warn_pin;
+	int b10_soft_ocp_warn_pin;
 	unsigned int b10_soft_ocp_warn_en;
 	unsigned int b10_soft_ocp_warn_cnt;
 	unsigned int b10_soft_ocp_warn_dvs_mask;

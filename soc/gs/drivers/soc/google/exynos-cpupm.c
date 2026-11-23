@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * GS101 SoC CPU Power Management driver
+ * GS SoC CPU Power Management driver
  *
  * Copyright (c) 2019 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
- * GS101 based board files should include this file.
- *
  */
 
-#include <linux/cleanup.h>
 #include <linux/cpumask.h>
 #include <linux/slab.h>
 #include <linux/tick.h>
@@ -27,8 +24,10 @@
 #include <soc/google/exynos-cpupm.h>
 #include <soc/google/cal-if.h>
 #include <soc/google/exynos-pmu-if.h>
+#include <soc/google/exynos-pm.h>
 #include <soc/google/debug-snapshot.h>
 #include <soc/google/acpm_ipc_ctrl.h>
+#include <soc/google/cpuidle_metrics.h>
 
 /*
  * State of CPUPM objects
@@ -92,6 +91,12 @@ struct power_mode {
 	/* name of power mode, it is declared in device tree */
 	char		name[NAME_LEN];
 
+	/* unique identifier for power mode */
+	int		cluster_id;
+
+	/* file node name of target_residency */
+	char		target_residency_name[NAME_LEN];
+
 	/* power mode state, BUSY or IDLE */
 	int		state;
 
@@ -121,6 +126,12 @@ struct power_mode {
 	 * it supports for enabling or disabling this power mode
 	 */
 	struct device_attribute	attr;
+
+	/*
+	 * device attribute for sysfs,
+	 * it supports for turning target residency
+	 */
+	struct device_attribute       target_residency_attr;
 
 	/* user's request for enabling/disabling power mode */
 	bool		user_request;
@@ -159,8 +170,10 @@ static bool __percpu *hotplug_ing;
 static int cpuidle_state_max;
 static int system_suspended;
 static int system_rebooting;
+#if defined(CONFIG_SOC_GS101) || defined(CONFIG_SOC_GS201)
 bool system_is_in_itmon;
 EXPORT_SYMBOL_GPL(system_is_in_itmon);
+#endif
 
 #define NSCODE_BASE		(0xBFFFF000)
 #define CPU_STATE_BASE_OFFSET	0x2C
@@ -175,30 +188,29 @@ static void do_nothing(void *unused) { }
 /******************************************************************************
  *                                    Notifier                                *
  ******************************************************************************/
-static DEFINE_RAW_SPINLOCK(notifier_lock);
+static DEFINE_RWLOCK(notifier_lock);
 static RAW_NOTIFIER_HEAD(notifier_chain);
 
-int exynos_cpupm_notifier_register(struct notifier_block *nb)
+int exynos_sicd_notifier_register(struct notifier_block *nb)
 {
 	unsigned long flags;
 	int ret;
 
-	raw_spin_lock_irqsave(&notifier_lock, flags);
+	write_lock_irqsave(&notifier_lock, flags);
 	ret = raw_notifier_chain_register(&notifier_chain, nb);
-	raw_spin_unlock_irqrestore(&notifier_lock, flags);
+	write_unlock_irqrestore(&notifier_lock, flags);
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_cpupm_notifier_register);
+EXPORT_SYMBOL_GPL(exynos_sicd_notifier_register);
 
-static int exynos_cpupm_notify(int event, int v)
+static int exynos_sicd_notify(int event, int v)
 {
-	unsigned long flags;
 	int ret;
 
-	raw_spin_lock_irqsave(&notifier_lock, flags);
+	read_lock(&notifier_lock);
 	ret = raw_notifier_call_chain(&notifier_chain, event, &v);
-	raw_spin_unlock_irqrestore(&notifier_lock, flags);
+	read_unlock(&notifier_lock);
 
 	return notifier_to_errno(ret);
 }
@@ -230,7 +242,7 @@ struct idle_ip {
 	unsigned int		pmu_offset;
 };
 
-static DEFINE_RAW_SPINLOCK(idle_ip_lock);
+static DEFINE_SPINLOCK(idle_ip_lock);
 
 static LIST_HEAD(ip_list);
 
@@ -265,18 +277,18 @@ static bool ip_busy(void)
 	struct idle_ip *ip;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 
 	cpupm_profile_idle_ip();
 
 	list_for_each_entry(ip, &ip_list, list) {
 		if (__ip_busy(ip)) {
-			raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+			spin_unlock_irqrestore(&idle_ip_lock, flags);
 			/* IP is busy */
 			return true;
 		}
 	}
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	/* IPs are idle */
 	return false;
@@ -302,16 +314,16 @@ void exynos_update_ip_idle_status(int index, int idle)
 	struct idle_ip *ip;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 	ip = find_ip(index);
 	if (!ip) {
 		pr_err("unknown idle-ip index %d\n", index);
-		raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+		spin_unlock_irqrestore(&idle_ip_lock, flags);
 		return;
 	}
 
 	ip->idle = idle;
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 }
 EXPORT_SYMBOL_GPL(exynos_update_ip_idle_status);
 
@@ -328,7 +340,7 @@ int exynos_get_idle_ip_index(const char *name)
 	if (!ip)
 		return -ENOMEM;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 
 	if (list_empty(&ip_list))
 		new_index = 0;
@@ -340,7 +352,7 @@ int exynos_get_idle_ip_index(const char *name)
 	ip->type = NORMAL_IP;
 	list_add_tail(&ip->list, &ip_list);
 
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	exynos_update_ip_idle_status(ip->index, CPUPM_STATE_BUSY);
 
@@ -397,8 +409,9 @@ static void cpupm_profile_begin(struct cpupm_stats *stat)
 	stat->entry_count++;
 }
 
-static void cpupm_profile_end(struct cpupm_stats *stat, int cancel)
+static void cpupm_profile_end(struct cpupm_stats *stat, int cancel, int cluster_id)
 {
+	s64 time_delta;
 	if (!stat->entry_time)
 		return;
 
@@ -407,8 +420,11 @@ static void cpupm_profile_end(struct cpupm_stats *stat, int cancel)
 		return;
 	}
 
-	stat->residency_time +=
-		ktime_to_us(ktime_sub(ktime_get(), stat->entry_time));
+	time_delta = ktime_to_us(ktime_sub(ktime_get(), stat->entry_time));
+
+	cpuidle_metrics_histogram_append(cluster_id, time_delta);
+
+	stat->residency_time += time_delta;
 	stat->entry_time = 0;
 }
 
@@ -630,7 +646,7 @@ static DEVICE_ATTR_RW(profile);
  * the power mode, it is necessary to set the critical section to check the
  * state of cpus in the power domain, cpupm_lock is used for it.
  */
-static DEFINE_RAW_SPINLOCK(cpupm_lock);
+static spinlock_t cpupm_lock;
 
 static void awake_cpus(const struct cpumask *cpus)
 {
@@ -813,7 +829,6 @@ static bool entry_allow(int cpu, struct power_mode *mode)
 	return true;
 }
 
-extern u32 exynos_eint_wake_mask_array[3];
 static void set_wakeup_mask(void)
 {
 	int i;
@@ -853,7 +868,7 @@ static void enter_power_mode(int cpu, struct power_mode *mode)
 		if (!is_acpm_ipc_flushed())
 			return;
 
-		if (unlikely(exynos_cpupm_notify(SICD_ENTER, 0)))
+		if (unlikely(exynos_sicd_notify(SICD_ENTER, 0)))
 			return;
 
 		cal_pm_enter(SYS_SICD);
@@ -871,7 +886,7 @@ static void enter_power_mode(int cpu, struct power_mode *mode)
 
 static void exit_power_mode(int cpu, struct power_mode *mode, int cancel)
 {
-	cpupm_profile_end(&mode->stat, cancel);
+	cpupm_profile_end(&mode->stat, cancel, mode->cluster_id);
 
 	/*
 	 * Configure settings to exit power mode. This is executed by the
@@ -892,7 +907,7 @@ static void exit_power_mode(int cpu, struct power_mode *mode, int cancel)
 			cal_pm_earlywakeup(SYS_SICD);
 		else
 			cal_pm_exit(SYS_SICD);
-		exynos_cpupm_notify(SICD_EXIT, cancel);
+		exynos_sicd_notify(SICD_EXIT, cancel);
 		system_disabled = 0;
 
 		break;
@@ -908,7 +923,7 @@ static void exynos_cpupm_enter(int cpu)
 	struct exynos_cpupm *pm;
 	int i;
 
-	raw_spin_lock(&cpupm_lock);
+	spin_lock(&cpupm_lock);
 	pm = per_cpu_ptr(cpupm, cpu);
 
 	/* Configure PMUCAL to power down core */
@@ -929,7 +944,7 @@ static void exynos_cpupm_enter(int cpu)
 			enter_power_mode(cpu, mode);
 	}
 
-	raw_spin_unlock(&cpupm_lock);
+	spin_unlock(&cpupm_lock);
 }
 
 static void exynos_cpupm_exit(int cpu, int cancel)
@@ -937,7 +952,7 @@ static void exynos_cpupm_exit(int cpu, int cancel)
 	struct exynos_cpupm *pm;
 	int i;
 
-	raw_spin_lock(&cpupm_lock);
+	spin_lock(&cpupm_lock);
 	pm = per_cpu_ptr(cpupm, cpu);
 
 	/* Make settings to exit from mode */
@@ -958,7 +973,7 @@ static void exynos_cpupm_exit(int cpu, int cancel)
 	/* Configure PMUCAL to power up core */
 	cal_cpu_enable(cpu);
 
-	raw_spin_unlock(&cpupm_lock);
+	spin_unlock(&cpupm_lock);
 }
 
 static int exynos_cpu_pm_notify_callback(struct notifier_block *self,
@@ -969,31 +984,26 @@ static int exynos_cpu_pm_notify_callback(struct notifier_block *self,
 
 	switch (action) {
 	case CPU_PM_ENTER:
-		/*
-		 * Ignore CPU_PM_ENTER event in reboot sequence or
-		 * in suspend sequence.
-		 */
-		if (system_suspended || system_rebooting)
+		/* disable CPU_PM_ENTER event in reboot sequence */
+		if (system_rebooting)
+			return NOTIFY_BAD;
+
+		/* ignore CPU_PM_ENTER event in suspend sequence */
+		if (system_suspended)
 			return NOTIFY_OK;
 
+#if defined(CONFIG_SOC_GS101) || defined(CONFIG_SOC_GS201)
 		/* ignore CPU_PM_ENTER event in itmon sequence */
 		if (system_is_in_itmon)
 			return NOTIFY_BAD;
+#endif
 
-		/*
-		 * There are few block condition of C2.
-		 *  - while cpu is hotpluging.
-		 */
-		if (exynos_cpupm_notify(C2_ENTER, 0) ||
-		    *per_cpu_ptr(hotplug_ing, cpu))
+		if (*per_cpu_ptr(hotplug_ing, cpu))
 			return NOTIFY_BAD;
 
 		exynos_cpupm_enter(cpu);
 		break;
 	case CPU_PM_EXIT:
-		if (system_rebooting)
-			return NOTIFY_OK;
-
 		cpu_state = readl_relaxed(nscode_base + CPU_STATE_OFFSET(cpu));
 		exynos_cpupm_exit(cpu, cpu_state & CANCEL_FLAG);
 		break;
@@ -1035,14 +1045,14 @@ static ssize_t idle_ip_show(struct device *dev,
 	unsigned long flags;
 	int ret = 0;
 
-	raw_spin_lock_irqsave(&idle_ip_lock, flags);
+	spin_lock_irqsave(&idle_ip_lock, flags);
 
 	list_for_each_entry(ip, &ip_list, list)
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "[%d] %s %s\n",
 				 ip->index, ip->name,
 				 ip->type == EXTERN_IP ? "(E)" : "");
 
-	raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	return ret;
 }
@@ -1082,6 +1092,33 @@ static ssize_t power_mode_store(struct device *dev,
 		__disable_power_mode(mode);
 
 	return count;
+}
+
+static ssize_t target_residency_store(struct device *dev,
+				      struct device_attribute *target_residency_attr,
+				      const char *buf, size_t count)
+{
+	struct power_mode *mode = container_of(target_residency_attr,
+					       struct power_mode, target_residency_attr);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	if (mode->target_residency == val)
+		return count;
+	mode->target_residency = val;
+	return count;
+}
+
+static ssize_t target_residency_show(struct device *dev,
+				     struct device_attribute *target_residency_attr,
+				     char *buf)
+{
+	struct power_mode *mode = container_of(target_residency_attr,
+					       struct power_mode, target_residency_attr);
+
+	return sysfs_emit(buf, "%d\n", mode->target_residency);
 }
 
 static struct attribute *exynos_cpupm_attrs[] = {
@@ -1162,13 +1199,9 @@ static int cpuhp_cpupm_offline(unsigned int cpu)
  ******************************************************************************/
 static void wakeup_mask_init(struct device_node *cpupm_dn)
 {
-	struct device_node *root_dn __free(device_node);
-	struct device_node *wm_dn __free(device_node) = NULL;
-	struct device_node *dn;
+	struct device_node *root_dn, *wm_dn, *dn;
 	int count, i;
 
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(cpupm_dn);
 	root_dn = of_find_node_by_name(cpupm_dn, "wakeup-mask");
 	if (!root_dn) {
 		pr_warn("wakeup-mask is omitted in device tree\n");
@@ -1180,8 +1213,6 @@ static void wakeup_mask_init(struct device_node *cpupm_dn)
 		return;
 
 	/* initialize wakeup-mask */
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(root_dn);
 	wm_dn = of_find_node_by_name(root_dn, "wakeup-masks");
 	if (!wm_dn) {
 		pr_warn("wakeup-masks is omitted in device tree\n");
@@ -1204,11 +1235,8 @@ static void wakeup_mask_init(struct device_node *cpupm_dn)
 				     &wm_config->wakeup_masks[i].mask);
 		i++;
 	}
-	of_node_put(wm_dn);
 
 	/* initialize eint-wakeup-mask */
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(root_dn);
 	wm_dn = of_find_node_by_name(root_dn, "eint-wakeup-masks");
 	if (!wm_dn) {
 		pr_warn("eint-wakeup-masks is omitted in device tree\n");
@@ -1238,7 +1266,8 @@ fail:
 
 static int exynos_cpupm_mode_init(struct platform_device *pdev)
 {
-	struct device_node *dn __free(device_node) = of_node_get(pdev->dev.of_node);
+	int cluster_id = 0;
+	struct device_node *dn = pdev->dev.of_node;
 
 	cpupm = alloc_percpu(struct exynos_cpupm);
 
@@ -1256,6 +1285,9 @@ static int exynos_cpupm_mode_init(struct platform_device *pdev)
 			return -ENOMEM;
 
 		strncpy(mode->name, dn->name, NAME_LEN - 1);
+		scnprintf(mode->target_residency_name,
+			  sizeof(mode->target_residency_name),
+			  "%s_target_residency", mode->name);
 
 		ret = of_property_read_u32(dn, "target-residency",
 					   &mode->target_residency);
@@ -1283,13 +1315,19 @@ static int exynos_cpupm_mode_init(struct platform_device *pdev)
 
 		of_property_read_u32(dn, "cal-id", &mode->cal_id);
 
-		atomic_set(&mode->disable, 0);
+		if (of_property_read_bool(dn, "disable-on-boot")) {
+			atomic_set(&mode->disable, 1);
+			mode->user_request = false;
+		} else {
+			atomic_set(&mode->disable, 0);
+			mode->user_request = true;
+		}
 
-		/*
-		 * The users' request is set to enable since initialization
-		 * state of power mode is enabled.
-		 */
-		mode->user_request = true;
+		/* set cluster_id and register with cpuidle metrics histogram */
+		mode->cluster_id = cluster_id;
+		cluster_id += 1;
+		cpuidle_metrics_histogram_register(mode->name, mode->cluster_id,
+							mode->target_residency);
 
 		/*
 		 * Initialize attribute for sysfs.
@@ -1305,6 +1343,16 @@ static int exynos_cpupm_mode_init(struct platform_device *pdev)
 						      exynos_cpupm_group.name);
 			if (ret)
 				pr_warn("Failed to add sysfs or POWERMODE\n");
+
+			CPUPM_ATTR(mode->target_residency_attr,
+				   mode->target_residency_name, 0644,
+				   target_residency_show, target_residency_store);
+
+			ret = sysfs_add_file_to_group(&pdev->dev.kobj,
+						      &mode->target_residency_attr.attr,
+						      exynos_cpupm_group.name);
+			if (ret)
+				pr_warn("Faile to add sysfs or TARGET_RESIDENCY\n");
 		}
 
 		/* Connect power mode to the cpus in the power domain */
@@ -1353,12 +1401,11 @@ static int exynos_cpuidle_state_init(void)
 #define EXTERN_IDLE_IP_MAX		(4)
 static int extern_idle_ip_init(struct device_node *dn)
 {
-	struct device_node *child __free(device_node);
+	struct device_node *child = of_get_child_by_name(dn, "idle-ip");
 	struct idle_ip *ip;
 	int i, count, new_index;
 	unsigned long flags;
 
-	child = of_get_child_by_name(dn, "idle-ip");
 	if (!child)
 		return 0;
 
@@ -1370,29 +1417,26 @@ static int extern_idle_ip_init(struct device_node *dn)
 	if (!ip)
 		return -ENOMEM;
 
-	/*
-	 * TODO(b/374084861): this looks strange, seems it only really deals
-	 * with count == 1, as it keeps reusing 'ip' to attach to the global
-	 * ip_list multiple times.
-	 */
+	spin_lock_irqsave(&idle_ip_lock, flags);
+
 	for (i = 0; i < count; i++) {
 		const char *name;
 
 		of_property_read_string_index(child, "extern-idle-ip", i, &name);
-		ip->name = name;
-		ip->type = EXTERN_IP;
-		ip->pmu_offset = PMU_IDLE_IP(i);
 
-		raw_spin_lock_irqsave(&idle_ip_lock, flags);
 		if (list_empty(&ip_list))
 			new_index = 0;
 		else
 			new_index = list_last_entry(&ip_list, struct idle_ip, list)->index + 1;
-		ip->index = new_index;
 
+		ip->name = name;
+		ip->index = new_index;
+		ip->type = EXTERN_IP;
+		ip->pmu_offset = PMU_IDLE_IP(i);
 		list_add_tail(&ip->list, &ip_list);
-		raw_spin_unlock_irqrestore(&idle_ip_lock, flags);
 	}
+
+	spin_unlock_irqrestore(&idle_ip_lock, flags);
 
 	return 0;
 }
@@ -1417,7 +1461,6 @@ static const struct dev_pm_ops cpupm_pm_ops = {
 static int exynos_cpupm_probe(struct platform_device *pdev)
 {
 	int ret, cpu;
-	struct device *dev_root;
 
 	ret = extern_idle_ip_init(pdev->dev.of_node);
 	if (ret)
@@ -1428,13 +1471,9 @@ static int exynos_cpupm_probe(struct platform_device *pdev)
 		pr_warn("Failed to create sysfs for CPUPM\n");
 
 	/* Link CPUPM sysfs to /sys/devices/system/cpu/cpupm */
-	dev_root = bus_get_dev_root(&cpu_subsys);
-	if (dev_root) {
-		if (sysfs_create_link(&dev_root->kobj,
-				      &pdev->dev.kobj, "cpupm"))
-			pr_err("Failed to link CPUPM sysfs to cpu\n");
-		put_device(dev_root);
-	}
+	if (sysfs_create_link(&cpu_subsys.dev_root->kobj,
+			      &pdev->dev.kobj, "cpupm"))
+		pr_err("Failed to link CPUPM sysfs to cpu\n");
 
 	ret = exynos_cpuidle_state_init();
 	if (ret)
@@ -1457,18 +1496,28 @@ static int exynos_cpupm_probe(struct platform_device *pdev)
 			  "AP_EXYNOS_CPU_POWER_DOWN_CONTROL",
 			  NULL, cpuhp_cpupm_offline);
 
-	raw_spin_lock_init(&cpupm_lock);
+	spin_lock_init(&cpupm_lock);
 
 	nscode_base = ioremap(NSCODE_BASE, SZ_4K);
 
 	system_rebooting = false;
 	register_reboot_notifier(&exynos_cpupm_reboot_nb);
 
+#if defined(CONFIG_SOC_GS101) || defined(CONFIG_SOC_GS201)
 	system_is_in_itmon = false;
+#endif
 
 	ret = cpu_pm_register_notifier(&exynos_cpu_pm_notifier);
 	if (ret)
 		return ret;
+
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	/*
+	 * In case of ZUMA, we can allow for core to enter C2 by informing TF-A
+	 * using PMU_INFORM0.
+	 */
+	exynos_pmu_write(PMU_INFORM0, PMU_ALLOWED_C2);
+#endif
 
 	ret = register_trace_android_vh_cpu_idle_enter(vendor_hook_cpu_idle_enter, NULL);
 	WARN_ON(ret);
@@ -1498,7 +1547,11 @@ static struct platform_driver exynos_cpupm_driver = {
 	.probe		= exynos_cpupm_probe,
 };
 
+#if defined(CONFIG_SOC_ZUMA)
+MODULE_SOFTDEP("pre: exynos_mct_v3 exynos_mct");
+#else
 MODULE_SOFTDEP("pre: exynos_mct");
+#endif
 MODULE_DESCRIPTION("Exynos CPUPM driver");
 MODULE_LICENSE("GPL");
 module_platform_driver(exynos_cpupm_driver);

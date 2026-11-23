@@ -25,9 +25,10 @@
 #include <soc/google/cal-if.h>
 #include <soc/google/ect_parser.h>
 #include <soc/google/exynos_cpu_cooling.h>
+#include <soc/google/exynos_pm_qos.h>
 #include <thermal_core.h>
 
-#include <trace/events/clock.h>
+#include <trace/events/power.h>
 #include <trace/events/thermal_exynos.h>
 
 #if IS_ENABLED(CONFIG_PIXEL_EM)
@@ -74,6 +75,15 @@ struct time_in_idle {
 };
 
 /**
+ * struct exynos_cpu_dsu_bci_freq - struct for constraint frequency mapping
+ */
+struct exynos_cpu_dsu_bci_freq {
+	u32 cpu_freq;
+	u32 dsu_freq;
+	u32 bci_freq;
+};
+
+/**
  * struct exynos_cpu_cooling_device - data for cooling device with cpufreq
  * @id: unique integer value corresponding to each exynos_cpu_cooling_device
  *	registered.
@@ -114,11 +124,48 @@ struct exynos_cpu_cooling_device {
 	struct thermal_zone_device *tzd;
 	unsigned long sysfs_req;
 	bool sysfs_req_bypass;
+	bool apply_dsu_bci_constraints;
+	struct exynos_pm_qos_request dsu_qos_max;
+	struct exynos_pm_qos_request bci_qos_max;
+	struct exynos_cpu_dsu_bci_freq *cpu_dsu_bci_map;
+	int cpu_dsu_bci_map_size;
 };
 
 static DEFINE_IDA(cpufreq_ida);
 static DEFINE_MUTEX(cooling_list_lock);
 static LIST_HEAD(cpufreq_cdev_list);
+
+static int init_dsu_bci_constraint_table_dt(struct exynos_cpu_cooling_device *cpufreq_cdev,
+                                    struct device_node *dn)
+{
+	struct exynos_cpu_dsu_bci_freq *table;
+	int size, num_rows, ret;
+
+	/*
+	 * Each DSU BCI constraint table row consists of CPU frequency, DSU frequency
+	 * and BCI frequency values. The size of each row is 96 bytes (3 x 32 bytes)
+	 * To get number of rows, divide the total size by 3
+	 */
+	size = of_property_count_u32_elems(dn, "dsu-bci-constraint-table");
+	if ((size <= 0) || (size % 3 != 0))
+		return -EINVAL;
+
+	num_rows = size / 3;
+	table = kcalloc(num_rows, sizeof(*table), GFP_KERNEL);
+	if (!table)
+		return -ENOMEM;
+
+	ret = of_property_read_u32_array(dn, "dsu-bci-constraint-table", (u32 *)table, size);
+	if (ret) {
+		kfree(table);
+		return -EINVAL;
+	}
+
+	cpufreq_cdev->cpu_dsu_bci_map = table;
+	cpufreq_cdev->cpu_dsu_bci_map_size =  num_rows;
+	return 0;
+}
+
 
 /* Below code defines functions to be used for cpufreq as cooling device */
 
@@ -636,6 +683,26 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
 		trace_vendor_cdev_update(cdev->type, state, state);
 	}
 
+	if (cpufreq_cdev->apply_dsu_bci_constraints) {
+		int i;
+		int num_opps = cpufreq_cdev->cpu_dsu_bci_map_size;
+		int cur_cpu_freq = cpufreq_cdev->freq_table[state].frequency;
+		int dsu_freq = cpufreq_cdev->cpu_dsu_bci_map[0].dsu_freq;
+		int bci_freq = cpufreq_cdev->cpu_dsu_bci_map[0].bci_freq;
+
+		for (i = 0; i < num_opps; i++) {
+			if (cur_cpu_freq >= cpufreq_cdev->cpu_dsu_bci_map[i].cpu_freq) {
+				dsu_freq = cpufreq_cdev->cpu_dsu_bci_map[i].dsu_freq;
+				bci_freq = cpufreq_cdev->cpu_dsu_bci_map[i].bci_freq;
+				break;
+			}
+		}
+
+		exynos_pm_qos_update_request(&cpufreq_cdev->dsu_qos_max, dsu_freq);
+		exynos_pm_qos_update_request(&cpufreq_cdev->bci_qos_max, bci_freq);
+		trace_thermal_exynos_dus_bci_freq_update_request(dsu_freq, bci_freq);
+	}
+
 	return ret;
 }
 
@@ -852,6 +919,67 @@ static unsigned int find_next_max(struct cpufreq_frequency_table *table,
 	return max;
 }
 
+static struct thermal_zone_device *parse_ect_cooling_level(
+	struct thermal_cooling_device *cdev, char *cooling_name)
+{
+	struct thermal_instance *instance;
+	struct thermal_zone_device *tz = NULL;
+	bool foundtz = false;
+	void *thermal_block;
+	struct ect_ap_thermal_function *function;
+	int i, temperature;
+	unsigned int freq;
+
+	mutex_lock(&cdev->lock);
+	list_for_each_entry(instance, &cdev->thermal_instances, cdev_node) {
+		tz = instance->tz;
+		if (!strncasecmp(cooling_name, tz->type, THERMAL_NAME_LENGTH)) {
+			foundtz = true;
+			break;
+		}
+	}
+	mutex_unlock(&cdev->lock);
+
+	if (!foundtz)
+		goto skip_ect;
+
+	thermal_block = ect_get_block(BLOCK_AP_THERMAL);
+	if (!thermal_block)
+		goto skip_ect;
+
+	function = ect_ap_thermal_get_function(thermal_block, cooling_name);
+	if (!function)
+		goto skip_ect;
+
+	for (i = 0; i < function->num_of_range; ++i) {
+		struct exynos_cpu_cooling_device *cpufreq_cdev = cdev->devdata;
+		unsigned long max_level = 0;
+		int level;
+
+		temperature = function->range_list[i].lower_bound_temperature;
+		freq = function->range_list[i].max_frequency;
+
+		instance = get_thermal_instance(tz, cdev, i);
+		if (!instance) {
+			pr_err("%s: (%s, %d)instance isn't valid\n", __func__, cooling_name, i);
+			goto skip_ect;
+		}
+
+		cdev->ops->get_max_state(cdev, &max_level);
+		level = get_level(cpufreq_cdev, freq);
+
+		if (level == THERMAL_CSTATE_INVALID)
+			level = max_level;
+
+		instance->upper = level;
+
+		pr_info("Parsed From ECT : %s: [%d] Temperature : %d, frequency : %u, level: %d\n",
+			cooling_name, i, temperature, freq, level);
+	}
+skip_ect:
+	return tz;
+}
+
 ssize_t
 state2power_table_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -1023,7 +1151,7 @@ __exynos_cpu_cooling_register(struct device_node *np,
 		goto free_idle_time;
 	}
 
-	ret = ida_alloc(&cpufreq_ida, GFP_KERNEL);
+	ret = ida_simple_get(&cpufreq_ida, 0, 0, GFP_KERNEL);
 	if (ret < 0) {
 		cdev = ERR_PTR(ret);
 		goto free_table;
@@ -1085,9 +1213,7 @@ __exynos_cpu_cooling_register(struct device_node *np,
 	}
 
 	/* This needs to be done before thermal_of_cooling_device_register ... */
-	cpufreq_cdev->tzd = thermal_zone_get_zone_by_name(cooling_name);
-	if (IS_ERR(cpufreq_cdev->tzd))
-		cpufreq_cdev->tzd = NULL;
+	cpufreq_cdev->tzd = parse_ect_cooling_level(cdev, cooling_name);
 
 	mutex_lock(&cooling_list_lock);
 	list_add(&cpufreq_cdev->node, &cpufreq_cdev_list);
@@ -1104,12 +1230,23 @@ __exynos_cpu_cooling_register(struct device_node *np,
 			i, power);
 	}
 
+	if (init_dsu_bci_constraint_table_dt(cpufreq_cdev, np) == 0) {
+		exynos_pm_qos_add_request(&cpufreq_cdev->dsu_qos_max, PM_QOS_DSU_THROUGHPUT_MAX,
+					  INT_MAX);
+		exynos_pm_qos_add_request(&cpufreq_cdev->bci_qos_max, PM_QOS_BCI_THROUGHPUT_MAX,
+					  INT_MAX);
+		cpufreq_cdev->apply_dsu_bci_constraints = true;
+
+	} else {
+		cpufreq_cdev->apply_dsu_bci_constraints = false;
+	}
+
 	return cdev;
 
 remove_qos_req:
 	freq_qos_remove_request(&cpufreq_cdev->qos_req);
 remove_ida:
-	ida_free(&cpufreq_ida, cpufreq_cdev->id);
+	ida_simple_remove(&cpufreq_ida, cpufreq_cdev->id);
 free_table:
 	kfree(cpufreq_cdev->freq_table);
 free_idle_time:

@@ -5,7 +5,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 #include <soc/google/exynos-pd_hsi0.h>
@@ -98,16 +97,13 @@ int exynos_pd_hsi0_ldo_manual_control(bool on)
 {
 	struct exynos_pd_hsi0_data *hsi0_data;
 
+	pr_info("%s ldo = %d\n", __func__, on);
+
 	hsi0_data = exynos_pd_hsi0_get_struct();
 	if (!hsi0_data)
 		return -ENODEV;
 
-	mutex_lock(&hsi0_data->power_lock);
-
-	pr_info("%s ldo = %d\n", __func__, on);
 	exynos_pd_hsi0_ldo_control(hsi0_data, on);
-
-	mutex_unlock(&hsi0_data->power_lock);
 
 	eusb_repeater_update_usb_state(on);
 
@@ -147,34 +143,6 @@ bool exynos_pd_hsi0_get_ldo_status(void)
 	return false;
 }
 EXPORT_SYMBOL_GPL(exynos_pd_hsi0_get_ldo_status);
-
-void exynos_pd_hsi0_write_lock(void)
-{
-	struct exynos_pd_hsi0_data *hsi0_data;
-
-	hsi0_data = exynos_pd_hsi0_get_struct();
-	if (!hsi0_data)
-		return;
-
-	mutex_lock(&hsi0_data->power_lock);
-
-	return;
-}
-EXPORT_SYMBOL_GPL(exynos_pd_hsi0_write_lock);
-
-void exynos_pd_hsi0_write_unlock(void)
-{
-	struct exynos_pd_hsi0_data *hsi0_data;
-
-	hsi0_data = exynos_pd_hsi0_get_struct();
-	if (!hsi0_data)
-		return;
-
-	mutex_unlock(&hsi0_data->power_lock);
-
-	return;
-}
-EXPORT_SYMBOL_GPL(exynos_pd_hsi0_write_unlock);
 
 static int exynos_pd_hsi0_probe(struct platform_device *pdev)
 {
@@ -228,8 +196,6 @@ static int exynos_pd_hsi0_probe(struct platform_device *pdev)
 		return PTR_ERR(hsi0_data->vdd_low);
 	}
 
-	mutex_init(&hsi0_data->power_lock);
-
 	/* vote on due to the regulators already turned on */
 #if IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201)
 	exynos_pd_hsi0_vdd_hsi_manual_control(true);
@@ -240,17 +206,20 @@ static int exynos_pd_hsi0_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void exynos_pd_hsi0_remove(struct platform_device *pdev)
+static int exynos_pd_hsi0_remove(struct platform_device *pdev)
 {
 	struct exynos_pd_hsi0_data *hsi0_data = platform_get_drvdata(pdev);
 
 	kfree(hsi0_data);
+
+	return 0;
 }
 
 static const struct of_device_id hsi0_of_match[] = {
 	{ .compatible = "exynos-pd-hsi0", },
 	{},
 };
+MODULE_DEVICE_TABLE(of, hsi0_of_match);
 
 static struct platform_driver exynos_pd_hsi0 = {
 	.probe = exynos_pd_hsi0_probe,

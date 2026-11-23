@@ -65,7 +65,7 @@ static struct mfc_fmt *__mfc_dec_find_format(struct mfc_ctx *ctx,
 	return fmt;
 }
 
-static struct v4l2_query_ext_ctrl *__mfc_dec_get_ctrl(int id)
+static struct v4l2_queryctrl *__mfc_dec_get_ctrl(int id)
 {
 	unsigned long i;
 
@@ -79,7 +79,7 @@ static struct v4l2_query_ext_ctrl *__mfc_dec_get_ctrl(int id)
 /* Check whether a ctrl value if correct */
 static int __mfc_dec_check_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl)
 {
-	struct v4l2_query_ext_ctrl *c;
+	struct v4l2_queryctrl *c;
 
 	c = __mfc_dec_get_ctrl(ctrl->id);
 	if (!c) {
@@ -89,10 +89,13 @@ static int __mfc_dec_check_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ct
 
 	if (ctrl->value < c->minimum || ctrl->value > c->maximum
 		|| (c->step != 0 && ctrl->value % c->step != 0)) {
-		mfc_ctx_err("[CTRLS] Invalid control id (%#x) value (%d)\n", ctrl->id, ctrl->value);
+		mfc_ctx_err("[CTRLS][%s] id: %#x, invalid value (%d)\n",
+				c->name, ctrl->id, ctrl->value);
 		return -ERANGE;
 	}
 
+	mfc_debug(5, "[CTRLS][%s] id: %#x, value: %d (%#x)\n",
+			c->name, ctrl->id, ctrl->value, ctrl->value);
 	return 0;
 }
 
@@ -124,7 +127,7 @@ static int __mfc_dec_enum_fmt(struct mfc_dev *dev, struct v4l2_fmtdesc *f,
 
 		if (j == f->index) {
 			fmt = &dec_formats[i];
-			strscpy(f->description, fmt->name,
+			strlcpy(f->description, fmt->name,
 				sizeof(f->description));
 			f->pixelformat = fmt->fourcc;
 
@@ -498,12 +501,13 @@ static void __mfc_dec_update_pix_format(struct mfc_ctx *ctx, struct v4l2_format 
 static int mfc_dec_g_fmt_vid_cap_mplane(struct file *file, void *priv,
 						struct v4l2_format *f)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dev *dev = ctx->dev;
 	struct mfc_core *core;
 	struct mfc_core_ctx *core_ctx;
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct mfc_raw_info *raw;
+	int ret;
 
 	mfc_debug_enter();
 
@@ -545,8 +549,12 @@ static int mfc_dec_g_fmt_vid_cap_mplane(struct file *file, void *priv,
 		 * If the MFC is parsing the header,
 		 * so wait until it is finished.
 		 */
-		if (mfc_wait_for_done_core_ctx(core_ctx,
-					MFC_REG_R2H_CMD_SEQ_DONE_RET)) {
+		ret = mfc_wait_for_done_core_ctx(core_ctx, MFC_REG_R2H_CMD_SEQ_DONE_RET);
+		if (ret) {
+			if (core_ctx->int_err == MFC_REG_ERR_UNSUPPORTED_FEATURE) {
+				mfc_ctx_err("header parsing failed by unsupported feature\n");
+				return -EINVAL;
+			}
 			mfc_ctx_err("header parsing failed\n");
 			return -EAGAIN;
 		}
@@ -627,7 +635,7 @@ static int mfc_dec_g_fmt_vid_cap_mplane(struct file *file, void *priv,
 static int mfc_dec_g_fmt_vid_out_mplane(struct file *file, void *priv,
 						struct v4l2_format *f)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct v4l2_pix_format_mplane *pix_fmt_mp = &f->fmt.pix_mp;
 
@@ -654,7 +662,7 @@ static int mfc_dec_g_fmt_vid_out_mplane(struct file *file, void *priv,
 /* Try format */
 static int mfc_dec_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_fmt *fmt;
 	struct v4l2_pix_format_mplane *pix_fmt_mp = &f->fmt.pix_mp;
 
@@ -672,7 +680,7 @@ static int mfc_dec_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 static int mfc_dec_s_fmt_vid_cap_mplane(struct file *file, void *priv,
 							struct v4l2_format *f)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct v4l2_pix_format_mplane *pix_fmt_mp = &f->fmt.pix_mp;
 	struct mfc_fmt *fmt = NULL;
 
@@ -702,8 +710,9 @@ static int mfc_dec_s_fmt_vid_out_mplane(struct file *file, void *priv,
 							struct v4l2_format *f)
 {
 	struct mfc_dev *dev = video_drvdata(file);
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dec *dec = ctx->dec_priv;
+	struct mfc_core *core;
 	struct v4l2_pix_format_mplane *pix_fmt_mp = &f->fmt.pix_mp;
 	struct mfc_fmt *fmt = NULL;
 	int ret = 0;
@@ -741,10 +750,16 @@ static int mfc_dec_s_fmt_vid_out_mplane(struct file *file, void *priv,
 	mfc_debug(2, "[STREAM] sizeimage: %d\n", pix_fmt_mp->plane_fmt[0].sizeimage);
 	pix_fmt_mp->plane_fmt[0].bytesperline = 0;
 
+	core = mfc_get_main_core_wait(dev, ctx);
+	atomic_inc(&core->during_idle_resume);
+	/* Trigger idle resume if core is in the idle mode for starting NAL_Q */
+	mfc_rm_qos_control(ctx, MFC_QOS_TRIGGER);
+
 	ret = mfc_rm_instance_open(dev, ctx);
 	if (ret)
 		mfc_ctx_err("Failed to instance open\n");
 
+	atomic_dec(&core->during_idle_resume);
 	mfc_debug_leave();
 
 	return ret;
@@ -755,7 +770,7 @@ static int mfc_dec_reqbufs(struct file *file, void *priv,
 		struct v4l2_requestbuffers *reqbufs)
 {
 	struct mfc_dev *dev = video_drvdata(file);
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct mfc_core *core;
 	struct mfc_core_ctx *core_ctx;
@@ -763,7 +778,7 @@ static int mfc_dec_reqbufs(struct file *file, void *priv,
 
 	mfc_debug_enter();
 
-	if (reqbufs->memory == V4L2_MEMORY_MMAP) {
+	if (reqbufs->memory != V4L2_MEMORY_DMABUF) {
 		mfc_ctx_err("Not supported memory type (%d)\n", reqbufs->memory);
 		return -EINVAL;
 	}
@@ -807,7 +822,7 @@ static int mfc_dec_reqbufs(struct file *file, void *priv,
 					if (core->has_llc && core->llc_on_status)
 						mfc_llc_flush(core);
 					if (core->has_slc && core->slc_on_status)
-						mfc_slc_flush(core);
+						mfc_slc_flush(core, ctx);
 
 					core_ctx = core->core_ctx[ctx->num];
 					mfc_release_codec_buffers(core_ctx);
@@ -868,7 +883,7 @@ static int mfc_dec_reqbufs(struct file *file, void *priv,
 static int mfc_dec_querybuf(struct file *file, void *priv,
 						   struct v4l2_buffer *buf)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	int ret;
 
 	mfc_debug_enter();
@@ -900,7 +915,7 @@ static int mfc_dec_querybuf(struct file *file, void *priv,
 /* Queue a buffer */
 static int mfc_dec_qbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dev *dev = ctx->dev;
 	int ret = -EINVAL;
 
@@ -958,7 +973,7 @@ static int mfc_dec_qbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 /* Dequeue a buffer */
 static int mfc_dec_dqbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct dec_dpb_ref_info *dstBuf, *srcBuf;
 	struct hdr10_plus_meta *dst_sei_meta, *src_sei_meta;
@@ -1013,8 +1028,7 @@ static int mfc_dec_dqbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 		if (dec->hdr10_plus_full) {
 			src_sei_full = HDR10_PLUS_ADDR(dec->hdr10_plus_full, buf->index);
 			if (dec->sh_handle_hdr.vaddr != NULL) {
-				dst_sei_full = HDR10_PLUS_ADDR(dec->sh_handle_hdr.vaddr,
-								buf->index);
+				dst_sei_full = HDR10_PLUS_ADDR(dec->sh_handle_hdr.vaddr, buf->index);
 				memcpy(dst_sei_full, src_sei_full, HDR10_PLUS_DATA_SIZE);
 				if (hdr_dump == 1) {
 					mfc_ctx_err("[HDR+][DUMP] SH_HANDLE data (idx %d)....\n",
@@ -1050,7 +1064,7 @@ static int mfc_dec_dqbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 static int mfc_dec_streamon(struct file *file, void *priv,
 			   enum v4l2_buf_type type)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	int ret = -EINVAL;
 
 	mfc_debug_enter();
@@ -1081,10 +1095,17 @@ static int mfc_dec_streamon(struct file *file, void *priv,
 static int mfc_dec_streamoff(struct file *file, void *priv,
 			    enum v4l2_buf_type type)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
+	struct mfc_dev *dev = ctx->dev;
+	struct mfc_core *core;
 	int ret = -EINVAL;
 
 	mfc_debug_enter();
+
+	core = mfc_get_main_core_wait(dev, ctx);
+	atomic_inc(&core->during_idle_resume);
+	/* Trigger idle resume if core is in the idle mode for stopping NAL_Q */
+	mfc_rm_qos_control(ctx, MFC_QOS_TRIGGER);
 
 	if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		mfc_debug(4, "dec src streamoff\n");
@@ -1100,17 +1121,18 @@ static int mfc_dec_streamoff(struct file *file, void *priv,
 		mfc_ctx_err("unknown v4l2 buffer type\n");
 	}
 
+	atomic_dec(&core->during_idle_resume);
 	mfc_debug_leave();
 
 	return ret;
 }
 
 /* Query a ctrl */
-static int mfc_dec_query_ext_ctrl(struct file *file, void *priv,
-				  struct v4l2_query_ext_ctrl *qc)
+static int mfc_dec_queryctrl(struct file *file, void *priv,
+			    struct v4l2_queryctrl *qc)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
-	struct v4l2_query_ext_ctrl *c;
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
+	struct v4l2_queryctrl *c;
 
 	c = __mfc_dec_get_ctrl(qc->id);
 	if (!c) {
@@ -1119,8 +1141,6 @@ static int mfc_dec_query_ext_ctrl(struct file *file, void *priv,
 	}
 
 	*qc = *c;
-	qc->elems = 1;
-	qc->elem_size = 4;
 	return 0;
 }
 
@@ -1305,14 +1325,35 @@ static int __mfc_dec_get_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl
 	return 0;
 }
 
-static int __mfc_dec_set_param(struct mfc_ctx *ctx, struct v4l2_control *ctrl)
+/* Get a ctrl */
+static int mfc_dec_g_ctrl(struct file *file, void *priv,
+			struct v4l2_control *ctrl)
 {
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
+	int ret = 0;
+
+	mfc_debug_enter();
+	ret = __mfc_dec_get_ctrl_val(ctx, ctrl);
+	mfc_debug_leave();
+
+	return ret;
+}
+
+/* Set a ctrl */
+static int mfc_dec_s_ctrl(struct file *file, void *priv,
+			 struct v4l2_control *ctrl)
+{
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct mfc_ctx_ctrl *ctx_ctrl;
+	int ret = 0;
 	int found = 0;
 
-	mfc_debug(5, "[CTRLS] set id: %#x, value: %d (%#x)\n",
-			ctrl->id, ctrl->value, ctrl->value);
+	mfc_debug_enter();
+
+	ret = __mfc_dec_check_ctrl_val(ctx, ctrl);
+	if (ret)
+		return ret;
 
 	switch (ctrl->id) {
 	case V4L2_CID_MPEG_VIDEO_DECODER_MPEG4_DEBLOCK_FILTER:
@@ -1436,6 +1477,8 @@ static int __mfc_dec_set_param(struct mfc_ctx *ctx, struct v4l2_control *ctrl)
 		break;
 	}
 
+	mfc_debug_leave();
+
 	return 0;
 }
 
@@ -1475,7 +1518,7 @@ static void __mfc_dec_update_disp_res(struct mfc_ctx *ctx, struct v4l2_selection
 static int mfc_dec_g_selection(struct file *file, void *priv,
 		struct v4l2_selection *s)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct mfc_dev *dev = ctx->dev;
 	struct mfc_core *core;
 	struct mfc_core_ctx *core_ctx;
@@ -1549,13 +1592,14 @@ static int mfc_dec_g_selection(struct file *file, void *priv,
 static int mfc_dec_g_ext_ctrls(struct file *file, void *priv,
 			struct v4l2_ext_controls *f)
 {
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
+	struct mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
 	struct v4l2_ext_control *ext_ctrl;
 	struct v4l2_control ctrl;
 	int i;
 	int ret = 0;
 
-	mfc_debug(5, "[CTRLS] which: %#x\n", f->which);
+	if (f->which != V4L2_CTRL_CLASS_CODEC)
+		return -EINVAL;
 
 	for (i = 0; i < f->count; i++) {
 		ext_ctrl = (f->controls + i);
@@ -1577,46 +1621,6 @@ static int mfc_dec_g_ext_ctrls(struct file *file, void *priv,
 	return ret;
 }
 
-static int mfc_dec_s_ext_ctrls(struct file *file, void *priv,
-				struct v4l2_ext_controls *f)
-{
-	struct mfc_ctx *ctx = file_to_mfc_ctx(file);
-	struct v4l2_ext_control *ext_ctrl;
-	struct v4l2_control ctrl;
-	int i;
-	int ret = 0;
-
-	mfc_debug_enter();
-
-	mfc_debug(5, "[CTRLS] which: %#x\n", f->which);
-
-	for (i = 0; i < f->count; i++) {
-		ext_ctrl = (f->controls + i);
-
-		ctrl.id = ext_ctrl->id;
-		ctrl.value = ext_ctrl->value;
-
-		ret = __mfc_dec_check_ctrl_val(ctx, &ctrl);
-		if (ret != 0) {
-			f->error_idx = i;
-			break;
-		}
-
-		ret = __mfc_dec_set_param(ctx, &ctrl);
-		if (ret != 0) {
-			f->error_idx = i;
-			break;
-		}
-
-		mfc_debug(5, "[CTRLS][%d] id: %#x, value: %d\n",
-				i, ext_ctrl->id, ext_ctrl->value);
-	}
-
-	mfc_debug_leave();
-
-	return ret;
-}
-
 /* v4l2_ioctl_ops */
 static const struct v4l2_ioctl_ops mfc_dec_ioctl_ops = {
 	.vidioc_querycap		= mfc_dec_querycap,
@@ -1634,10 +1638,11 @@ static const struct v4l2_ioctl_ops mfc_dec_ioctl_ops = {
 	.vidioc_dqbuf			= mfc_dec_dqbuf,
 	.vidioc_streamon		= mfc_dec_streamon,
 	.vidioc_streamoff		= mfc_dec_streamoff,
-	.vidioc_query_ext_ctrl		= mfc_dec_query_ext_ctrl,
+	.vidioc_queryctrl		= mfc_dec_queryctrl,
+	.vidioc_g_ctrl			= mfc_dec_g_ctrl,
+	.vidioc_s_ctrl			= mfc_dec_s_ctrl,
 	.vidioc_g_selection		= mfc_dec_g_selection,
 	.vidioc_g_ext_ctrls		= mfc_dec_g_ext_ctrls,
-	.vidioc_s_ext_ctrls		= mfc_dec_s_ext_ctrls,
 };
 
 const struct v4l2_ioctl_ops *mfc_get_dec_v4l2_ioctl_ops(void)

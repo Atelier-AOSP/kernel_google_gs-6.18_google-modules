@@ -34,6 +34,9 @@
 #include "core-exynos.h"
 #include "dwc3-exynos-ldo.h"
 #include "exynos-otg.h"
+#if IS_ENABLED(CONFIG_USB_XHCI_GOOG_DMA)
+#include "xhci-goog-dma.h"
+#endif
 
 static const struct of_device_id exynos_dwc3_match[] = {
 	{
@@ -57,8 +60,9 @@ static int dwc3_exynos_clk_get(struct dwc3_exynos *exynos)
 		return -EINVAL;
 	}
 
-	clk_ids = devm_kcalloc(dev, clk_count + 1, sizeof(*clk_ids),
-			       GFP_KERNEL);
+	clk_ids = devm_kmalloc(dev,
+			       (clk_count + 1) * sizeof(const char *),
+				GFP_KERNEL);
 	if (!clk_ids) {
 		dev_err(dev, "failed to alloc for clock ids");
 		return -ENOMEM;
@@ -84,8 +88,10 @@ static int dwc3_exynos_clk_get(struct dwc3_exynos *exynos)
 				clk_count--;
 		}
 	}
+	clk_ids[clk_count] = NULL;
 
-	exynos->clocks = devm_kcalloc(exynos->dev, clk_count + 1, sizeof(*exynos->clocks),
+	exynos->clocks = devm_kmalloc(exynos->dev,
+				      (clk_count + 1) * sizeof(struct clk *),
 				      GFP_KERNEL);
 	if (!exynos->clocks)
 		return -ENOMEM;
@@ -97,6 +103,7 @@ static int dwc3_exynos_clk_get(struct dwc3_exynos *exynos)
 
 		exynos->clocks[i] = clk;
 	}
+	exynos->clocks[i] = NULL;
 
 	return 0;
 
@@ -248,17 +255,17 @@ static void dwc3_core_config(struct dwc3 *dwc, struct dwc3_exynos *exynos)
 	dwc3_exynos_writel(dwc->regs, DWC3_GUSB3PIPECTL(0), reg);
 
 	if (DWC3_VER_IS(DWC31, 170A)) {
-		reg = dwc3_exynos_readl(dwc->regs, DWC3_LLUCTL_PORT0);
+		reg = dwc3_exynos_readl(dwc->regs, PDWC3_LLUCTL);
 		reg |= (DWC3_PENDING_HP_TIMER_US(0xb) | DWC3_EN_US_HP_TIMER);
 		reg |= DWC3_FORCE_GEN1;
-		dwc3_exynos_writel(dwc->regs, DWC3_LLUCTL_PORT0, reg);
+		dwc3_exynos_writel(dwc->regs, PDWC3_LLUCTL, reg);
 
 		reg = dwc3_exynos_readl(dwc->regs, DWC3_LSKIPFREQ);
 		reg |= (DWC3_PM_ENTRY_TIMER_US(0x9) |
 			DWC3_PM_LC_TIMER_US(0x5) | DWC3_EN_PM_TIMER_US);
 		dwc3_exynos_writel(dwc->regs, DWC3_LSKIPFREQ, reg);
 	} else if (DWC3_VER_IS_WITHIN(DWC31, 180A, 190A)) {
-		reg = dwc3_exynos_readl(dwc->regs, DWC3_LLUCTL_PORT0);
+		reg = dwc3_exynos_readl(dwc->regs, PDWC3_LLUCTL);
 		reg &= ~(DWC3_LLUCTL_TX_TS1_CNT_MASK);
 		reg |= (DWC3_PENDING_HP_TIMER_US(0xb) | DWC3_EN_US_HP_TIMER) |
 		    (DWC3_LLUCTL_PIPE_RESET) | (DWC3_LLUCTL_LTSSM_TIMER_OVRRD) |
@@ -267,7 +274,7 @@ static void dwc3_core_config(struct dwc3 *dwc, struct dwc3_exynos *exynos)
 		if (exynos->config.force_gen1 && exynos->force_speed != USB_SPEED_SUPER_PLUS)
 			reg |= DWC3_FORCE_GEN1;
 
-		dwc3_exynos_writel(dwc->regs, DWC3_LLUCTL_PORT0, reg);
+		dwc3_exynos_writel(dwc->regs, PDWC3_LLUCTL, reg);
 
 		reg = dwc3_exynos_readl(dwc->regs, DWC3_LSKIPFREQ);
 		reg &= ~(DWC3_PM_LC_TIMER_US_MASK |
@@ -632,56 +639,42 @@ static int dwc3_exynos_remove_child(struct device *dev, void *unused)
 	return 0;
 }
 
-static void dwc3_exynos_host_fill_xhci_irq_res(struct dwc3 *dwc,
-					int irq, char *name)
+#if IS_ENABLED(CONFIG_USB_XHCI_GOOG_DMA)
+static struct xhci_goog_dma_coherent_mem **dwc3_exynos_get_dma_coherent_mem(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dwc->dev);
-	struct device_node *np = dev_of_node(&pdev->dev);
+	struct xhci_goog_dma_coherent_mem **dma_mem = NULL;
+	struct device *dwc3_exynos = dev->parent;
+	struct dwc3_exynos *exynos = dev_get_drvdata(dwc3_exynos);
 
-	dwc->xhci_resources[1].start = irq;
-	dwc->xhci_resources[1].end = irq;
-	dwc->xhci_resources[1].flags = IORESOURCE_IRQ | irq_get_trigger_type(irq);
-	if (!name && np)
-		dwc->xhci_resources[1].name = of_node_full_name(pdev->dev.of_node);
-	else
-		dwc->xhci_resources[1].name = name;
+	if (exynos) {
+		if (!exynos->mem) {
+			exynos->mem = devm_kzalloc(dev,
+				XHCI_GOOG_DMA_RMEM_MAX*sizeof(struct xhci_goog_dma_coherent_mem *),
+				GFP_KERNEL);
+		}
+
+		dma_mem = exynos->mem;
+	}
+
+	return dma_mem;
 }
 
-static int dwc3_exynos_host_get_irq(struct dwc3 *dwc)
+static void dwc3_exynos_put_dma_coherent_mem(struct device *dev)
 {
-	struct platform_device	*dwc3_pdev = to_platform_device(dwc->dev);
-	int irq;
+	struct device *dwc3_exynos = dev->parent;
+	struct dwc3_exynos *exynos = dev_get_drvdata(dwc3_exynos);
 
-	irq = platform_get_irq_byname_optional(dwc3_pdev, "host");
-	if (irq > 0) {
-		dwc3_exynos_host_fill_xhci_irq_res(dwc, irq, "host");
-		goto out;
+	if (exynos) {
+		if (exynos->mem) {
+			dev_dbg(dev, "Free the DMA memory.\n");
+			exynos->mem[XHCI_GOOG_DMA_RMEM_SRAM] = NULL;
+			exynos->mem[XHCI_GOOG_DMA_RMEM_DRAM] = NULL;
+			devm_kfree(dev, exynos->mem);
+			exynos->mem = NULL;
+		}
 	}
-
-	if (irq == -EPROBE_DEFER)
-		goto out;
-
-	irq = platform_get_irq_byname_optional(dwc3_pdev, "dwc_usb3");
-	if (irq > 0) {
-		dwc3_exynos_host_fill_xhci_irq_res(dwc, irq, "dwc_usb3");
-		goto out;
-	}
-
-	if (irq == -EPROBE_DEFER)
-		goto out;
-
-	irq = platform_get_irq(dwc3_pdev, 0);
-	if (irq > 0) {
-		dwc3_exynos_host_fill_xhci_irq_res(dwc, irq, NULL);
-		goto out;
-	}
-
-	if (!irq)
-		irq = -EINVAL;
-
-out:
-	return irq;
 }
+#endif
 
 int dwc3_exynos_host_init(struct dwc3_exynos *exynos)
 {
@@ -707,9 +700,21 @@ int dwc3_exynos_host_init(struct dwc3_exynos *exynos)
 	dwc->xhci_resources[0].flags = res->flags;
 	dwc->xhci_resources[0].name = res->name;
 
-	irq = dwc3_exynos_host_get_irq(dwc);
-	if (irq < 0)
+	irq = platform_get_irq(dwc3_pdev, 0);
+	if (irq < 0) {
+		dev_err(dev, "missing irq resource\n");
 		return irq;
+	}
+
+	dwc->xhci_resources[1].start = irq;
+	dwc->xhci_resources[1].end = irq;
+	dwc->xhci_resources[1].flags = IORESOURCE_IRQ | irq_get_trigger_type(irq);
+	dwc->xhci_resources[1].name = of_node_full_name(dwc3_pdev->dev.of_node);
+
+#if IS_ENABLED(CONFIG_USB_XHCI_GOOG_DMA)
+	xhci_goog_register_get_cb(dwc3_exynos_get_dma_coherent_mem);
+	xhci_goog_register_put_cb(dwc3_exynos_put_dma_coherent_mem);
+#endif
 
 	xhci = platform_device_alloc("xhci-hcd-exynos", PLATFORM_DEVID_AUTO);
 	if (!xhci) {
@@ -773,6 +778,11 @@ void dwc3_exynos_host_exit(struct dwc3_exynos *exynos)
 	struct dwc3		*dwc = exynos->dwc;
 
 	platform_device_unregister(dwc->xhci);
+
+#if IS_ENABLED(CONFIG_USB_XHCI_GOOG_DMA)
+	xhci_goog_unregister_get_cb();
+	xhci_goog_unregister_put_cb();
+#endif
 }
 EXPORT_SYMBOL_GPL(dwc3_exynos_host_exit);
 
@@ -1065,6 +1075,14 @@ static ssize_t usb_data_enabled_store(struct device *dev, struct device_attribut
 
 	exynos->usb_data_enabled = enabled;
 
+	if (exynos->usb_data_enabled) {
+		if (extcon_get_state(exynos->edev, EXTCON_USB) > 0)
+			dwc3_exynos_device_event(exynos->dev, 1);
+		else if (extcon_get_state(exynos->edev, EXTCON_USB_HOST) > 0)
+			dwc3_exynos_host_event(exynos->dev, 1);
+		dwc3_exynos_wait_role(exynos->dotg);
+	}
+
 	return n;
 }
 static DEVICE_ATTR_RW(usb_data_enabled);
@@ -1281,7 +1299,7 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 
 	dwc3_pdev = of_find_device_by_node(dwc3_np);
 	exynos->dwc = platform_get_drvdata(dwc3_pdev);
-	if (exynos->dwc == NULL || exynos->dwc->dev == NULL || exynos->dwc->gadget == NULL)
+	if (exynos->dwc == NULL)
 		goto populate_err;
 
 	/* dwc3 core configurations */
@@ -1299,8 +1317,8 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 	mutex_init(&exynos->dotg_lock);
 	exynos->usb_data_enabled = true;
 
-	exynos_usbdrd_phy_tune(exynos->dwc->usb2_generic_phy[0], 0);
-	exynos_usbdrd_phy_tune(exynos->dwc->usb3_generic_phy[0], 0);
+	exynos_usbdrd_phy_tune(exynos->dwc->usb2_generic_phy, 0);
+	exynos_usbdrd_phy_tune(exynos->dwc->usb3_generic_phy, 0);
 
 	ret = pm_runtime_put(dev);
 	pm_runtime_allow(dev);
@@ -1312,7 +1330,7 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 	}
 
 	/* disconnect gadget in probe */
-	usb_udc_vbus_handler(exynos->dwc->gadget, false);
+	dwc3_otg_gadget_handler(exynos->dwc->gadget, false);
 
 	if (of_property_read_bool(dev->of_node, "extcon")) {
 		/*
@@ -1333,7 +1351,6 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 populate_err:
 	platform_device_unregister(exynos->usb2_phy);
 	platform_device_unregister(exynos->usb3_phy);
-	of_node_put(dwc3_np);
 extcon_unregister:
 	if (exynos->edev) {
 		extcon_unregister_notifier(exynos->edev, EXTCON_USB, &exynos->device_nb);
@@ -1349,14 +1366,12 @@ vdd33_err:
 	return ret;
 }
 
-static void dwc3_exynos_remove(struct platform_device *pdev)
+static int dwc3_exynos_remove(struct platform_device *pdev)
 {
 	struct dwc3_exynos	*exynos = platform_get_drvdata(pdev);
 	struct dwc3	*dwc = exynos->dwc;
 
-	mutex_lock(&exynos->dotg_lock);
 	dwc3_exynos_otg_exit(dwc, exynos);
-	mutex_unlock(&exynos->dotg_lock);
 
 	pm_runtime_get_sync(&pdev->dev);
 
@@ -1375,6 +1390,8 @@ static void dwc3_exynos_remove(struct platform_device *pdev)
 		dwc3_exynos_clk_disable_unprepare(exynos);
 		pm_runtime_set_suspended(&pdev->dev);
 	}
+
+	return 0;
 }
 
 static void dwc3_exynos_shutdown(struct platform_device *pdev)
@@ -1451,31 +1468,6 @@ static int dwc3_exynos_runtime_resume(struct device *dev)
 	pm_runtime_mark_last_busy(dev);
 	return 0;
 }
-
-static int dwc3_exynos_runtime_idle(struct device *dev)
-{
-#if IS_ENABLED(CONFIG_EXYNOS_PD_HSI0)
-	struct dwc3_exynos *exynos = dev_get_drvdata(dev);
-	u32 reg;
-
-	/*
-	 * TODO: Explore alternative approaches to guarantee the disconnect
-	 * flow executes seamlessly, eliminating the need for the dwc3 module
-	 * to verify dwc3 registers.
-	 */
-	exynos_pd_hsi0_write_lock();
-	if (exynos->dwc && exynos_pd_hsi0_get_ldo_status()) {
-		reg = dwc3_exynos_readl(exynos->dwc->regs, DWC3_DALEPENA);
-		if (reg)
-			return -EBUSY;
-	}
-	exynos_pd_hsi0_write_unlock();
-#endif
-
-	pm_runtime_mark_last_busy(dev);
-
-	return 0;
-}
 #endif
 
 #ifdef CONFIG_PM_SLEEP
@@ -1512,7 +1504,7 @@ static int dwc3_exynos_resume(struct device *dev)
 static const struct dev_pm_ops dwc3_exynos_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(dwc3_exynos_suspend, dwc3_exynos_resume)
 	SET_RUNTIME_PM_OPS(dwc3_exynos_runtime_suspend,
-			   dwc3_exynos_runtime_resume, dwc3_exynos_runtime_idle)
+			   dwc3_exynos_runtime_resume, NULL)
 };
 
 #define DEV_PM_OPS	(&dwc3_exynos_dev_pm_ops)

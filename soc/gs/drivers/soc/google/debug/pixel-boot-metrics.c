@@ -21,7 +21,9 @@
 		u32 timestamp2 =	\
 		boot_metrics_get(METRICS_PHASE_##_phase2, METRICS_##_phase2##_##_type2);	\
 		\
-		return sprintf(buf, "%u\n", timestamp2 - timestamp1);	\
+		u32 interval = boot_metrics_calculate_interval(timestamp1, timestamp2);		\
+		\
+		return sysfs_emit(buf, "%u\n", interval);	\
 	}	\
 	static struct kobj_attribute metrics_attr_##_name = __ATTR_RO(_name)
 
@@ -34,6 +36,20 @@ static struct metrics_header_t *metrics_header_info;
  * Sysfs structures
  */
 static struct kobject *boot_metrics_kobj;
+
+
+static u32 boot_metrics_calculate_interval(u32 timestamp_before, u32 timestamp_after)
+{
+	/*
+	 * The timestamps overflow at `METRICS_DATA_OVERFLOW`.
+	 * They are not full-range 32-bit integers.
+	 */
+
+	/* To make sure it is larger than `timestamp_before`. */
+	timestamp_after += METRICS_DATA_OVERFLOW;
+
+	return (timestamp_after - timestamp_before) % METRICS_DATA_OVERFLOW;
+}
 
 /*
  * Get metrics header.
@@ -94,7 +110,8 @@ static u32 metrics_type_get(u32 index)
  */
 static u32 metrics_data_get(u32 index)
 {
-	return ((boot_metrics_get_index_metrics(index) >> METRICS_DATA_SHIFT) & METRICS_DATA_MASK);
+	return (((boot_metrics_get_index_metrics(index) >> METRICS_DATA_SHIFT) & METRICS_DATA_MASK)
+		<< METRICS_DATA_ALIGN);
 }
 
 /*
@@ -158,7 +175,7 @@ METRICS_ATTR_RO(bl2wb, BL2, WARMBOOT_START, EL3, MON_SMC_WARMBOOT_START);
 METRICS_ATTR_RO(el3wb, EL3, MON_SMC_WARMBOOT_START, EL3, MON_SMC_WARMBOOT_END);
 /* total: bl1_sleep_go + pbl_sleep_go + el3_sleep_go + bl2_warmboot + el3_warmboot time */
 METRICS_ATTR_RO(resume_total, BL1, SLEEP_GO_START, EL3, MON_SMC_WARMBOOT_END);
-#else // CONFIG_SOC_GS201 or later
+#else /* CONFIG_SOC_GS201 or Zuma */
 /* pblsg: pbl_sleep_go time */
 METRICS_ATTR_RO(pblsg, PBL, SLEEP_GO_START, EL3, MON_SMC_WARMBOOT_START);
 /* el3wb: el3_warmboot time */

@@ -3,7 +3,6 @@
  * Copyright (c) 2020 Samsung Electronics Co., Ltd.
  */
 
-#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -291,7 +290,7 @@ static int exynos_dm_index_validate(int index)
 #ifdef CONFIG_OF
 static int exynos_dm_parse_dt(struct device_node *np, struct exynos_dm_device *dm)
 {
-	struct device_node *domain_np __free(device_node) = NULL;
+	struct device_node *child_np, *domain_np = NULL;
 	const char *name;
 	int ret = 0;
 
@@ -314,7 +313,7 @@ static int exynos_dm_parse_dt(struct device_node *np, struct exynos_dm_device *d
 	if (!dm->domain_order)
 		return -ENOMEM;
 
-	for_each_child_of_node_scoped(domain_np, child_np) {
+	for_each_child_of_node(domain_np, child_np) {
 		int index;
 		const char *available;
 #if IS_ENABLED(CONFIG_GS_ACPM)
@@ -757,7 +756,7 @@ int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq)
 {
 	struct exynos_dm_data *dm;
 	u64 pre, before, after;
-#if IS_ENABLED(CONFIG_GS_ACPM)
+#if IS_ENABLED(CONFIG_GS_ACPM) && !IS_ENABLED(CONFIG_SOC_ZUMA)
 	struct ipc_config config;
 	unsigned int cmd[4];
 	int size, ch_num;
@@ -799,8 +798,8 @@ int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq)
 	dm->policy_max = max_freq;
 	dm->policy_min = min_freq;
 
-	/* Send policy to FVP */
-#if IS_ENABLED(CONFIG_GS_ACPM)
+#if IS_ENABLED(CONFIG_GS_ACPM) && !IS_ENABLED(CONFIG_SOC_ZUMA)
+       /* Send policy to FVP */
 	if (dm->policy_use) {
 		ret = acpm_ipc_request_channel(exynos_dm->dev->of_node, NULL, &ch_num, &size);
 		if (ret) {
@@ -1105,13 +1104,15 @@ err_device:
 	return ret;
 }
 
-static void exynos_dm_remove(struct platform_device *pdev)
+static int exynos_dm_remove(struct platform_device *pdev)
 {
 	struct exynos_dm_device *dm = platform_get_drvdata(pdev);
 
 	sysfs_remove_group(&dm->dev->kobj, &exynos_dm_attr_group);
 	mutex_destroy(&dm->lock);
 	kfree(dm);
+
+	return 0;
 }
 
 static struct platform_device_id exynos_dm_driver_ids[] = {

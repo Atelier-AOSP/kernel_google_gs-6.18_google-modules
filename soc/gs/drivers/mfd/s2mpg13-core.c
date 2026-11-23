@@ -255,7 +255,8 @@ static void s2mpg13_get_rev_id(struct s2mpg13_dev *s2mpg13, int id)
 		s2mpg13->pmic_rev = S2MPG13_EVT1;
 }
 
-static int s2mpg13_i2c_probe(struct i2c_client *i2c)
+static int s2mpg13_i2c_probe(struct i2c_client *i2c,
+			     const struct i2c_device_id *dev_id)
 {
 	struct s2mpg13_dev *s2mpg13;
 	struct s2mpg13_platform_data *pdata = i2c->dev.platform_data;
@@ -289,6 +290,7 @@ static int s2mpg13_i2c_probe(struct i2c_client *i2c)
 	}
 
 	s2mpg13->dev = &i2c->dev;
+	s2mpg13->dev->init_name = "i2c-" S2MPG13_MFD_DEV_NAME;
 	i2c->addr = I2C_ADDR_TOP;
 	s2mpg13->i2c = i2c;
 	s2mpg13->device_type = S2MPG13X;

@@ -15,6 +15,7 @@
 #include <host/xhci.h> /* $(srctree)/drivers/usb/host/xhci.h */
 #include <host/xhci-mvebu.h> /* $(srctree)/drivers/usb/host/xhci-mvebu.h */
 #include <host/xhci-plat.h> /* $(srctree)/drivers/usb/host/xhci-plat.h */
+#include <host/xhci-rcar.h> /* $(srctree)/drivers/usb/host/xhci-rcar.h */
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
@@ -32,10 +33,15 @@
 #include <linux/usb/phy.h>
 
 #include <soc/google/exynos-cpupm.h>
+#include <trace/hooks/usb.h>
 
 #include "xhci-exynos.h"
 
 static struct hc_driver xhci_exynos_hc_driver;
+
+/* Callback for bus suspend */
+void (*bus_suspend_callback)(void *bus_suspend_payload, bool main_hcd, bool suspend);
+void *bus_suspend_payload;
 
 static int xhci_exynos_setup(struct usb_hcd *hcd);
 static int xhci_exynos_start(struct usb_hcd *hcd);
@@ -45,6 +51,15 @@ static const struct xhci_driver_overrides xhci_exynos_overrides __initconst = {
 	.reset = xhci_exynos_setup,
 	.start = xhci_exynos_start,
 };
+
+void register_bus_suspend_callback(void (*callback)(void *bus_suspend_payload, bool main_hcd,
+						    bool suspend),
+				   void *data)
+{
+	bus_suspend_callback = callback;
+	bus_suspend_payload = data;
+}
+EXPORT_SYMBOL_GPL(register_bus_suspend_callback);
 
 /*
  * list of VID:PID pair of udevs which are allowed to enter Suspend state regardless of the
@@ -82,16 +97,16 @@ static bool xhci_exynos_match_udev(const struct xhci_exynos_udev_ids *list, cons
 
 static void xhci_exynos_early_stop_set(struct xhci_hcd_exynos *xhci_exynos, struct usb_hcd *hcd)
 {
-	struct usb_device *hdev = hcd->self.root_hub;
+	struct usb_device *rhdev = hcd->self.root_hub;
 	struct usb_hub *hub;
 	struct usb_port *port_dev;
 
-	if (!hdev || !hdev->actconfig || !hdev->maxchild) {
-		dev_info(xhci_exynos->dev, "no hdev to set early_stop\n");
+	if (!rhdev || !rhdev->actconfig || !rhdev->maxchild) {
+		dev_info(xhci_exynos->dev, "no rhdev to set early_stop\n");
 		return;
 	}
 
-	hub = usb_get_intfdata(hdev->actconfig->interface[0]);
+	hub = usb_get_intfdata(rhdev->actconfig->interface[0]);
 
 	if (!hub) {
 		dev_info(xhci_exynos->dev, "can't get usb_hub\n");
@@ -229,7 +244,8 @@ EXPORT_SYMBOL_GPL(xhci_exynos_port_power_set);
  * Query the suspend capability from the USB descriptors
  * @udev: the USB device to be checked
  */
-static bool xhci_exynos_allow_suspend_by_descriptor(struct usb_device *udev)
+static bool xhci_exynos_allow_suspend_by_descriptor(struct usb_device *udev,
+		bool *supports_audio)
 {
 	struct usb_interface_descriptor *desc;
 	bool allow_suspend = false;
@@ -248,6 +264,7 @@ static bool xhci_exynos_allow_suspend_by_descriptor(struct usb_device *udev)
 	for (i = 0; i < udev->config->desc.bNumInterfaces; i++) {
 		desc = &udev->config->intf_cache[i]->altsetting->desc;
 		if (desc->bInterfaceClass == USB_CLASS_AUDIO) {
+			*supports_audio = true;
 			udev->do_remote_wakeup = (udev->config->desc.bmAttributes &
 						  USB_CONFIG_ATT_WAKEUP) ? true : false;
 			dev_dbg(&udev->dev, "%s: remote_wakeup = %d\n", __func__,
@@ -276,6 +293,7 @@ static bool xhci_exynos_allow_suspend_with_action(struct usb_device *target_udev
 						  unsigned long action)
 {
 	bool allow_suspend = false;
+	bool supports_audio = false;
 
 	if (!action_udev || !target_udev)
 		return true;
@@ -293,7 +311,8 @@ static bool xhci_exynos_allow_suspend_with_action(struct usb_device *target_udev
 		int port;
 
 		/* Don't support suspend if the hub itself doesn't support remote_wakeup */
-		allow_suspend = xhci_exynos_allow_suspend_by_descriptor(target_udev);
+		allow_suspend = xhci_exynos_allow_suspend_by_descriptor(target_udev,
+				&supports_audio);
 		if (!allow_suspend)
 			return false;
 
@@ -315,7 +334,8 @@ static bool xhci_exynos_allow_suspend_with_action(struct usb_device *target_udev
 				if (!child_udev->config->interface[0])
 					return false;
 
-				allow_suspend = xhci_exynos_allow_suspend_by_descriptor(child_udev);
+				allow_suspend = xhci_exynos_allow_suspend_by_descriptor(child_udev,
+						&supports_audio);
 			}
 
 			/* Don't allow if one of the child devices doesn't allow suspend. */
@@ -323,7 +343,8 @@ static bool xhci_exynos_allow_suspend_with_action(struct usb_device *target_udev
 				return false;
 		}
 	} else {
-		allow_suspend = xhci_exynos_allow_suspend_by_descriptor(target_udev);
+		allow_suspend = xhci_exynos_allow_suspend_by_descriptor(target_udev,
+				&supports_audio);
 	}
 
 	return allow_suspend;
@@ -352,6 +373,11 @@ static void xhci_exynos_scan_roothub(struct xhci_hcd_exynos *xhci_exynos,
 
 			if (!child_udev->config->interface[0]) {
 				*suspend = false;
+
+				if (child_udev->speed >= USB_SPEED_SUPER)
+					xhci_exynos->port_state = PORT_USB3;
+				else
+					xhci_exynos->port_state = PORT_USB2;
 				break;
 			}
 
@@ -384,7 +410,8 @@ static void xhci_exynos_scan_roothub(struct xhci_hcd_exynos *xhci_exynos,
  * wakelocks are going to be held or released.
  */
 static int xhci_exynos_check_port(struct xhci_hcd_exynos *xhci_exynos,
-				  struct usb_device *action_udev, unsigned long action)
+				  struct usb_device *action_udev, unsigned long action,
+				  bool *supports_audio)
 {
 	struct usb_device *roothub_main;
 	struct usb_device *roothub_shared;
@@ -418,7 +445,7 @@ static int xhci_exynos_check_port(struct xhci_hcd_exynos *xhci_exynos,
 
 	/* When @action_udev is added, enable autosuspend of @action_udev if it supports */
 	if (action == USB_DEVICE_ADD) {
-		if (xhci_exynos_allow_suspend_by_descriptor(action_udev)) {
+		if (xhci_exynos_allow_suspend_by_descriptor(action_udev, supports_audio)) {
 			dev_dbg(&action_udev->dev, "enable autosuspend on device\n");
 			device_init_wakeup(&action_udev->dev, 1);
 			usb_enable_autosuspend(action_udev);
@@ -455,42 +482,54 @@ static void xhci_exynos_set_port(struct usb_device *udev, unsigned long action)
 	struct usb_hcd *hcd = container_of(udev->bus, struct usb_hcd, self);
 	struct xhci_exynos_priv *priv = hcd_to_xhci_exynos_priv(hcd);
 	struct xhci_hcd_exynos *xhci_exynos = priv->xhci_exynos;
-	struct device *ddev = &udev->dev;
+	struct device *dev = &udev->dev;
 	int check_port;
+	int ret;
+	bool supports_audio = false;
 
 	if (!xhci_exynos) {
-		dev_err(ddev, "Couldn't get exynos xhci!\n");
+		dev_err(dev, "Couldn't get exynos xhci!\n");
 		return;
 	} else
 		udev->dev.platform_data  = xhci_exynos;
 
-	check_port = xhci_exynos_check_port(xhci_exynos, udev, action);
+	check_port = xhci_exynos_check_port(xhci_exynos, udev, action, &supports_audio);
 	if (check_port < 0)
 		return;
 
 	switch (check_port) {
 	case PORT_EMPTY:
-		dev_dbg(ddev, "Port check empty\n");
+		dev_dbg(dev, "Port check empty\n");
 		xhci_exynos->is_otg_only = 1;
+		if (!xhci_exynos->usb3_phy_control) {
+			ret = usb_power_notify_control(1);
+			xhci_exynos->usb3_phy_control = true;
+			if (ret)
+				dev_warn(dev, "usb power control request ignored/rejected: %d\n", ret);
+		}
 		if (xhci_exynos->port_ctrl_allowed)
 			xhci_exynos_port_power_set(xhci_exynos, 1, 1);
 		break;
 	case PORT_USB2:
-		dev_dbg(ddev, "Port check usb2\n");
+		dev_dbg(dev, "Port check usb2\n");
 		xhci_exynos->is_otg_only = 0;
 		if (xhci_exynos->port_ctrl_allowed)
 			xhci_exynos_port_power_set(xhci_exynos, 0, 1);
+		if (supports_audio) {
+			usb_power_notify_control(0);
+			xhci_exynos->usb3_phy_control = false;
+		}
 		break;
 	case PORT_USB3:
 		xhci_exynos->is_otg_only = 0;
-		dev_dbg(ddev, "Port check usb3\n");
+		dev_dbg(dev, "Port check usb3\n");
 		break;
 	case PORT_HUB:
-		dev_dbg(ddev, "Port check hub\n");
+		dev_dbg(dev, "Port check hub\n");
 		xhci_exynos->is_otg_only = 0;
 		break;
 	case PORT_DP:
-		dev_dbg(ddev, "Port check DP\n");
+		dev_dbg(dev, "Port check DP\n");
 		xhci_exynos->is_otg_only = 0;
 		break;
 	default:
@@ -616,6 +655,51 @@ static void xhci_exynos_pm_runtime_init(struct device *dev)
 	init_waitqueue_head(&dev->power.wait_queue);
 }
 
+static struct xhci_exynos_ops *xhci_vendor_ops;
+
+int xhci_exynos_register_offload_ops(struct xhci_exynos_ops *offload_ops)
+{
+	if (offload_ops == NULL)
+		return -EINVAL;
+
+	xhci_vendor_ops = offload_ops;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(xhci_exynos_register_offload_ops);
+
+static int xhci_vendor_offload_init(struct device *dev, struct xhci_hcd *xhci)
+{
+	struct xhci_exynos_ops *ops = xhci_vendor_ops;
+
+	if (ops && ops->offload_init)
+		return ops->offload_init(xhci);
+
+	dev_err(dev, "Offload hooks or init function is null!\n");
+	return -EINVAL;
+}
+
+static void xhci_vendor_offload_cleanup(struct device *dev, struct xhci_hcd *xhci)
+{
+	struct xhci_exynos_ops *ops = xhci_vendor_ops;
+
+	if (ops && ops->offload_cleanup)
+		ops->offload_cleanup(xhci);
+	else
+		dev_err(dev, "Offload hooks or cleanup function is null!\n");
+}
+
+static int xhci_vendor_offload_setup(struct device *dev, struct xhci_hcd *xhci)
+{
+	struct xhci_exynos_ops *ops = xhci_vendor_ops;
+
+	if (ops && ops->offload_setup)
+		return ops->offload_setup(xhci);
+
+	dev_err(dev, "Offload hooks or setup function is null!\n");
+	return -EINVAL;
+}
+
 static int xhci_exynos_probe(struct platform_device *pdev)
 {
 	struct device		*parent = pdev->dev.parent;
@@ -714,6 +798,7 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 	xhci_exynos->usb3_portsc = hcd->regs + PORTSC_OFFSET;
 	xhci_exynos->is_otg_only = 1;
 	xhci_exynos->port_state = PORT_EMPTY;
+	xhci_exynos->usb3_phy_control = true;
 
 	xhci_exynos_register_notify();
 
@@ -801,6 +886,10 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 		}
 	}
 
+	ret = xhci_vendor_offload_init(&pdev->dev, xhci);
+	if (ret)
+		goto disable_usb_phy;
+
 	xhci_exynos->main_wakelock = main_wakelock;
 	xhci_exynos->shared_wakelock = shared_wakelock;
 
@@ -819,6 +908,10 @@ static int xhci_exynos_probe(struct platform_device *pdev)
 
 	xhci_exynos_early_stop_set(xhci_exynos, hcd);
 	xhci_exynos_early_stop_set(xhci_exynos, xhci->shared_hcd);
+
+	ret = xhci_vendor_offload_setup(&pdev->dev, xhci);
+	if (ret)
+		goto disable_usb_phy;
 
 	device_enable_async_suspend(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
@@ -866,7 +959,7 @@ disable_runtime:
 	return ret;
 }
 
-static void xhci_exynos_remove(struct platform_device *dev)
+static int xhci_exynos_remove(struct platform_device *dev)
 {
 	struct xhci_hcd_exynos *xhci_exynos = platform_get_drvdata(dev);
 	struct usb_hcd	*hcd = xhci_exynos->hcd;
@@ -897,6 +990,8 @@ remove_hcd:
 	usb_phy_shutdown(hcd->usb_phy);
 	usb_remove_hcd(hcd);
 
+	xhci_vendor_offload_cleanup(&dev->dev, xhci);
+
 	devm_iounmap(&dev->dev, hcd->regs);
 	usb_put_hcd(shared_hcd);
 
@@ -907,6 +1002,8 @@ remove_hcd:
 	pm_runtime_disable(&dev->dev);
 	pm_runtime_put_noidle(&dev->dev);
 	pm_runtime_set_suspended(&dev->dev);
+
+	return 0;
 }
 
 static void xhci_exynos_shutdown(struct platform_device *dev)
@@ -924,8 +1021,16 @@ static int __maybe_unused xhci_exynos_suspend(struct device *dev)
 	struct xhci_hcd_exynos *xhci_exynos = dev_get_drvdata(dev);
 	struct usb_hcd	*hcd = xhci_exynos->hcd;
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	int ret;
-	int ret_phy;
+	int ret = 0;
+	int ret_phy = 0;
+	int bypass = 0;
+	struct usb_device *udev = hcd->self.root_hub;
+	pm_message_t msg;
+
+	msg.event = 0;
+	trace_android_rvh_usb_dev_suspend(udev, msg, &bypass);
+	if (bypass)
+		return 0;
 
 	if (xhci_exynos->port_state == PORT_USB2 || (xhci_exynos->port_state == PORT_HUB)) {
 		ret_phy = exynos_usbdrd_phy_vendor_set(xhci_exynos->phy_usb2, 1, 0);
@@ -947,6 +1052,9 @@ static int __maybe_unused xhci_exynos_suspend(struct device *dev)
 	if (ret)
 		return ret;
 
+	if (bus_suspend_callback)
+		(*bus_suspend_callback)(bus_suspend_payload, hcd == xhci->main_hcd, true);
+
 	return  ret;
 }
 
@@ -955,14 +1063,22 @@ static int __maybe_unused xhci_exynos_resume(struct device *dev)
 	struct xhci_hcd_exynos *xhci_exynos = dev_get_drvdata(dev);
 	struct usb_hcd	*hcd = xhci_exynos->hcd;
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	int ret;
-	int ret_phy;
+	int ret = 0;
+	int ret_phy = 0;
+	int bypass = 0;
+	struct usb_device *udev = hcd->self.root_hub;
+	pm_message_t msg;
+
+	msg.event = 0;
+	trace_android_vh_usb_dev_resume(udev, msg, &bypass);
+	if (bypass)
+		return 0;
 
 	ret = xhci_priv_resume_quirk(hcd);
 	if (ret)
 		return ret;
 
-	ret = xhci_resume(xhci, false, false);
+	ret = xhci_resume(xhci, 0);
 	if (ret) {
 		dev_err(xhci_exynos->dev, "%s: xhci resume failed, ret = %d\n", __func__, ret);
 		return ret;
@@ -974,6 +1090,9 @@ static int __maybe_unused xhci_exynos_resume(struct device *dev)
 			dev_info(xhci_exynos->dev, "%s: phy vendor set fail, ret:%d\n",
 				 __func__, ret_phy);
 	}
+
+	if (bus_suspend_callback)
+		(*bus_suspend_callback)(bus_suspend_payload, hcd == xhci->main_hcd, false);
 
 	return ret;
 }

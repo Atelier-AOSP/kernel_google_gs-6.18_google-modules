@@ -6,12 +6,13 @@
  */
 
 #include <linux/bitops.h>
-#include <linux/gpio/consumer.h>
 #include <linux/kobject.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
+#include <trace/hooks/systrace.h>
 
 #include "sbb-mux.h"
 
@@ -62,7 +63,7 @@ static ssize_t sbb_signal_id_show(struct kobject *kobj,
 {
 	enum sbbm_signal_id signal_id = ((struct ext_kobj_attribute *)attr)->id;
 
-	return scnprintf(buf, PAGE_SIZE, "%d", signal_id);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", signal_id);
 }
 
 static ssize_t sbb_signal_type_show(struct kobject *kobj,
@@ -74,7 +75,7 @@ static ssize_t sbb_signal_type_show(struct kobject *kobj,
 	int signal_id = ((struct ext_kobj_attribute *)attr)->id;
 	int signal_type = signals[signal_id].type;
 
-	return scnprintf(buf, PAGE_SIZE, signal_type_strings[signal_type]);
+	return scnprintf(buf, PAGE_SIZE, "%s\n", signal_type_strings[signal_type]);
 }
 
 static ssize_t sbb_signal_value_show(struct kobject *kobj,
@@ -82,7 +83,7 @@ static ssize_t sbb_signal_value_show(struct kobject *kobj,
 {
 	enum sbbm_signal_id signal_id = ((struct ext_kobj_attribute *)attr)->id;
 
-	return scnprintf(buf, PAGE_SIZE, "%d",
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
 			 signal_trackers[signal_id].value);
 }
 
@@ -103,14 +104,11 @@ static int sbb_signal_set_value(enum sbbm_signal_id signal_id, int value)
 
 	spin_lock_irqsave(&tracker->lock, flags);
 
-	/*
-	 * TODO: add messages to trace. Should *NOT* call pr_*, as this could
-	 * be called from an interrupt context down the line.
-	 */
+	__ATRACE_INT_PID(1, signals[signal_id].name, value);
 
 	if (tracker->value == value) {
 		spin_unlock_irqrestore(&tracker->lock, flags);
-		return -EINVAL;
+		return 0;
 	}
 
 	if (value != SBB_REFRESH_VALUE) {
@@ -126,6 +124,7 @@ static int sbb_signal_set_value(enum sbbm_signal_id signal_id, int value)
 		 * The GPIO value is implicitly protected by needing to hold
 		 * the GPIO's signal's lock before changing the tracked signal.
 		 */
+		__ATRACE_INT_PID(1, gpio_trackers[gpio_id].name, tracker->value);
 		gpiod_set_value(gpio_trackers[gpio_id].gd, tracker->value);
 	}
 
@@ -154,11 +153,7 @@ static ssize_t sbb_signal_value_store(struct kobject *kobj,
 		return -EINVAL;
 	}
 
-	if (sbb_signal_set_value(signal_id, input_val == '1')) {
-		pr_err("sbb-mux: Signal %s is already set to %d!",
-		       signals[signal_id].name, input_val == '1');
-		return -EINVAL;
-	}
+	sbb_signal_set_value(signal_id, input_val == '1');
 
 	return buf_len;
 }
@@ -169,7 +164,7 @@ static ssize_t sbb_signal_toggle_count_show(struct kobject *kobj,
 {
 	enum sbbm_signal_id signal_id = ((struct ext_kobj_attribute *)attr)->id;
 
-	return scnprintf(buf, PAGE_SIZE, "%lu",
+	return scnprintf(buf, PAGE_SIZE, "%lu\n",
 			 signal_trackers[signal_id].toggle_count);
 }
 
@@ -389,7 +384,7 @@ static ssize_t sbb_gpio_tracked_signal_show(struct kobject *kobj,
 {
 	int gpio_id = ((struct ext_kobj_attribute *)attr)->id;
 
-	return scnprintf(buf, PAGE_SIZE, "%s",
+	return scnprintf(buf, PAGE_SIZE, "%s\n",
 			 signals[gpio_trackers[gpio_id].tracked_signal].name);
 }
 
@@ -448,18 +443,20 @@ static ssize_t sbb_gpio_value_show(struct kobject *kobj,
 {
 	int gpio_id = ((struct ext_kobj_attribute *)attr)->id;
 
-	return scnprintf(buf, PAGE_SIZE, "%d",
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
 			 gpiod_get_value_cansleep(gpio_trackers[gpio_id].gd));
 }
 
 static int sbb_mux_initialize_gpio_tracker(struct sbb_gpio_tracker *tracker,
 					   int gpio_id)
 {
+	int gpio_system_id;
 	const char *default_signal_name;
 	int default_signal_id;
-	struct gpio_desc *gpio_gd;
 
 	tracker->id = gpio_id;
+
+	tracker->system_id = -1;
 
 	mutex_init(&tracker->lock);
 
@@ -470,14 +467,28 @@ static int sbb_mux_initialize_gpio_tracker(struct sbb_gpio_tracker *tracker,
 		return -EINVAL;
 	}
 
-	gpio_gd = devm_gpiod_get_index(&platform_dev->dev, NULL,
-					gpio_id, GPIOD_OUT_LOW);
-	if (IS_ERR(gpio_gd)) {
+	gpio_system_id = of_get_gpio(platform_dev->dev.of_node, gpio_id);
+	if (gpio_system_id < 0) {
+		pr_err("sbb-mux: of_get_gpio failed for %d!\n", gpio_id);
+		return gpio_system_id;
+	}
+
+	pr_info("sbb-mux: GPIO system id: %d.\n", gpio_system_id);
+
+	if (devm_gpio_request_one(&platform_dev->dev, gpio_system_id,
+				  GPIOF_OUT_INIT_LOW, tracker->name)) {
 		pr_err("sbb-mux: GPIO request failed for %d!\n", gpio_id);
 		return -EPROBE_DEFER;
 	}
 
-	tracker->gd = gpio_gd;
+	tracker->gd = gpio_to_desc(gpio_system_id);
+	if (!tracker->gd) {
+		pr_err("sbb-mux: GPIO descriptor for %d not available!\n",
+		       gpio_system_id);
+		return -EINVAL;
+	}
+
+	tracker->system_id = gpio_system_id;
 
 	tracker->sysfs_folder =
 		kobject_create_and_add(tracker->name, gpios_sysfs_folder);
@@ -529,13 +540,16 @@ static int sbb_mux_initialize_gpio_tracker(struct sbb_gpio_tracker *tracker,
 	}
 
 	pr_info("Correctly initialized GPIO tracker #%d for GPIO %s!\n",
-		desc_to_gpio(gpio_gd), tracker->name);
+		gpio_system_id, tracker->name);
 
 	return 0;
 }
 
 static void sbb_mux_cleanup_gpio_tracker(struct sbb_gpio_tracker *tracker)
 {
+	if (tracker->system_id != -1) {
+		tracker->system_id = -1;
+	}
 
 	if (!tracker->sysfs_folder)
 		return;
@@ -567,7 +581,7 @@ static int sbb_mux_drv_probe(struct platform_device *dev)
 
 	pr_info("sbb-mux: Calling %s!\n", __func__);
 
-	num_gpios = gpiod_count(&dev->dev, NULL);
+	num_gpios = of_gpio_count(dev->dev.of_node);
 	pr_info("sbb-mux: Num GPIOs: %d.\n", num_gpios);
 
 	if (num_gpios <= 0) {
@@ -653,11 +667,13 @@ static void sbb_mux_drv_undo_probe(struct sbb_gpio_tracker **gpio_trackers_ptr)
 	*gpio_trackers_ptr = NULL;
 }
 
-static void sbb_mux_drv_remove(struct platform_device *dev)
+static int sbb_mux_drv_remove(struct platform_device *dev)
 {
 	pr_info("sbb-mux: Calling %s!\n", __func__);
 
 	sbb_mux_drv_undo_probe(&gpio_trackers);
+
+	return 0;
 }
 
 static int __init sbb_mux_init(void)

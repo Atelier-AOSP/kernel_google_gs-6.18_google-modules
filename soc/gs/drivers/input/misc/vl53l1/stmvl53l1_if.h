@@ -36,7 +36,7 @@
  * @li stmvl53l1_ranging1
  * @li stmvl53l1_ranging2
  */
-#define VL53L1_MISC_DEV_NAME "stmvl53l1_ranging"
+#define VL53L1_MISC_DEV_NAME "ispolin_ranging"
 /**
  * register data use for simple/single ranging data @ref VL53L1_IOCTL_GETDATAS
  *
@@ -247,17 +247,13 @@ struct stmvl53l1_roi_t {
 		 * [out] number of ROI  copied back to user\n
 		 * @warning 0 will not return any roi datas!
 		 */
-		union {
-			/* padding to keep size / ioctl number / ABI */
-			struct VL53L1_UserRoi_t __pad;
-			__DECLARE_FLEX_ARRAY(struct VL53L1_UserRoi_t, aUserRois);
-			/*!< roi data array length  definition is 1 but
-			 * NumberOfRoi+ FirstRoiToScan in array are required
-			 * and will be effectively copy to/from user space
-			 *
-			 * @sa stmvl53l1_roi_full_t
-			 */
-		};
+		struct VL53L1_UserRoi_t UserRois[1];
+		/*!< roi data array length  definition is 1 but
+		 * NumberOfRoi+ FirstRoiToScan in array are required
+		 * and will be effectively copy to/from user space
+		 *
+		 * @sa stmvl53l1_roi_full_t
+		 */
 	} roi_cfg /*!  [in/out] roi data and count */;
 };
 

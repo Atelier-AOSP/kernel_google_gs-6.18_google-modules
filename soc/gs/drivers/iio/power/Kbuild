@@ -1,3 +1,7 @@
 # When adding new entries keep the list in alphabetical order
-CFLAGS_odpm.o += -Wno-missing-prototypes
+
+ifeq ($(CONFIG_SOC_ZUMA),y)
 obj-$(CONFIG_ODPM) += odpm.o
+else
+obj-$(CONFIG_ODPM) += odpm-whi.o
+endif

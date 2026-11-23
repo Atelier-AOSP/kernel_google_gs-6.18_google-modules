@@ -261,9 +261,11 @@ static int exyswd_rng_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void exyswd_rng_remove(struct platform_device *pdev)
+static int exyswd_rng_remove(struct platform_device *pdev)
 {
 	hwrng_unregister(&rng);
+
+	return 0;
 }
 
 #if defined(CONFIG_PM_SLEEP) || defined(CONFIG_PM_RUNTIME)

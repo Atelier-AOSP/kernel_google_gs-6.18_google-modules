@@ -17,7 +17,7 @@
 #include <media/v4l2-mem2mem.h>
 #include <media/v4l2-ctrls.h>
 
-#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
+#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS) || IS_ENABLED(CONFIG_EXYNOS_PM_QOS_MODULE)
 #include <soc/google/exynos_pm_qos.h>
 #endif
 
@@ -112,10 +112,17 @@ struct smfc_dev {
 
 	struct clk *clk_gate;
 	struct clk *clk_gate2; /* available if clk_gate is valid */
-#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
+#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS) || IS_ENABLED(CONFIG_EXYNOS_PM_QOS_MODULE)
 	struct exynos_pm_qos_request qosreq_int;
+	struct exynos_pm_qos_request qosreq_mif;
 #endif
+	int bts_id;
+	int core_clk;
+	int bpc;
 	s32 qosreq_int_level;
+	s32 qosreq_mif_level;
+
+	struct delayed_work qos_work;
 
 };
 
@@ -230,9 +237,9 @@ struct smfc_ctx {
 
 extern const struct v4l2_ioctl_ops smfc_v4l2_ioctl_ops;
 
-static inline struct smfc_ctx *v4l2_file_to_smfc_ctx(struct file *file)
+static inline struct smfc_ctx *v4l2_fh_to_smfc_ctx(struct v4l2_fh *fh)
 {
-	return container_of(file_to_v4l2_fh(file), struct smfc_ctx, fh);
+	return container_of(fh, struct smfc_ctx, fh);
 }
 
 /* return the previous flag */

@@ -17,7 +17,6 @@
 #include <linux/regulator/consumer.h>
 #include <linux/usb/role.h>
 #include <linux/usb/typec_mux.h>
-#include <linux/usb/tcpci.h>
 #include <misc/gvotable.h>
 
 #include "google_tcpci_shim.h"
@@ -28,6 +27,7 @@ struct logbuffer;
 struct max777x9_contaminant;
 struct max77759_compliance_warnings;
 struct google_shim_tcpci_data;
+struct max77759_io_error;
 
 struct max77759_plat {
 	struct google_shim_tcpci_data data;
@@ -65,8 +65,17 @@ struct max77759_plat {
 	bool pd_capable;
 	void *usb_psy_data;
 	struct mutex icl_proto_el_lock;
-	/* Set vbus voltage alarms */
-	bool set_voltage_alarm;
+
+	/* Indicated whether vbus alarms have been enabled  */
+	bool alarm_enabled;
+	/* If vbus alarm is enabled, whether its programmed for high or low */
+	bool alarm_high;
+	/*
+	 * Protects vbus voltage alarm flags i.e. alarm_enabled, alarm_high and
+	 * ALERT_MASK.VBUS Voltage Alarm Lo/Hi.
+	 */
+	struct mutex vbus_alarm_lock;
+
 	unsigned int vbus_mv;
 	/* USB Data notification */
 	struct extcon_dev *extcon;
@@ -76,9 +85,9 @@ struct max77759_plat {
 	struct tcpm_port *port;
 	struct usb_psy_ops psy_ops;
 	/* toggle in_switch to kick debug accessory statemachine when already connected */
-	struct gpio_desc *in_switch_gpio;
-	struct gpio_desc *sbu_mux_en_gpio;
-	struct gpio_desc *sbu_mux_sel_gpio;
+	int in_switch_gpio;
+	int sbu_mux_en_gpio;
+	int sbu_mux_sel_gpio;
 	/* 0:active_low 1:active_high */
 	bool in_switch_gpio_active_high;
 	bool first_toggle;
@@ -111,6 +120,12 @@ struct max77759_plat {
 	int frs;
 	bool in_frs;
 	bool vsafe0v;
+
+	/*
+	 * Guards vsafe0v so that consistent values are viewed across different
+	 * execution context.
+	 */
+	struct mutex vsafe0v_lock;
 
 	/*
 	 * Current status of contaminant detection.
@@ -231,6 +246,8 @@ struct max77759_plat {
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *dentry;
 #endif
+
+	struct wakeup_source *cc_toggle_ws;
 };
 
 /*
@@ -259,7 +276,6 @@ void register_data_active_callback(void (*callback)(void *data_active_payload,
 				   void *data);
 void register_orientation_callback(void (*callback)(void *orientation_payload), void *data);
 
-/* AICL_OK is tracked with COMPLIANCE_WARNING_OTHER */
 #define COMPLIANCE_WARNING_OTHER 0
 #define COMPLIANCE_WARNING_DEBUG_ACCESSORY 1
 #define COMPLIANCE_WARNING_BC12 2

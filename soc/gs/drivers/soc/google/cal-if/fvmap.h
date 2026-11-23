@@ -20,14 +20,14 @@ struct fvmap_header {
 };
 
 struct clocks {
-	DECLARE_FLEX_ARRAY(u16, addr);
+	u16 addr[0];
 };
 
 struct pll_header {
 	u32 addr;
 	u16 o_lock;
 	u16 level;
-	u32 pms[];
+	u32 pms[0];
 };
 
 struct rate_volt {
@@ -36,11 +36,11 @@ struct rate_volt {
 };
 
 struct rate_volt_header {
-	DECLARE_FLEX_ARRAY(struct rate_volt, table);
+	struct rate_volt table[0];
 };
 
 struct dvfs_table {
-	DECLARE_FLEX_ARRAY(u8, val);
+	u8 val[0];
 };
 
 #if IS_ENABLED(CONFIG_ACPM_DVFS)

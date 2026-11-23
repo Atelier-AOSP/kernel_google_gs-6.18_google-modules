@@ -39,13 +39,6 @@ config TYPEC_MAX77759
 	help
 	  MAX77759 TCPCI driver to interface with TCPM.
 
-config TCPCI_VENDOR_HOOKS
-	bool "Enable TCPCI vendor hooks"
-	depends on TYPEC_MAX77759
-	default n
-	help
-	  This config is used to enable/disable the TCPCI vendor hooks.
-
 config TYPEC_MAX77759_CONTAMINANT
 	tristate "Maxim MAX77759 specific contaminant detection routines"
 	depends on TYPEC_MAX77759
@@ -59,3 +52,10 @@ config TYPEC_MAX77779_CONTAMINANT
           Maxim MAX77779 specific contaminant detection routiness.
 
 endif # TYPEC_TCPM
+
+config POGO_TRANSPORT
+	tristate "Pogo transport management driver"
+	depends on TYPEC_MAX77759
+	select GOOGLE_LOGBUFFER
+	help
+	  Pogo transport management driver
