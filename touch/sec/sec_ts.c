@@ -15,6 +15,10 @@ struct sec_ts_data *tsp_info;
 #include "sec_ts.h"
 #include <samsung/exynos_drm_connector.h>
 
+#if IS_ENABLED(CONFIG_GS_DRM_PANEL_UNIFIED)
+#include <gs_drm/gs_drm_connector.h>
+#endif
+
 /* init the kfifo for health check. */
 #define SEC_TS_HC_KFIFO_LEN 4 /* must be power of 2. */
 DEFINE_KFIFO(hc_fifo, struct sec_ts_health_check, SEC_TS_HC_KFIFO_LEN);
@@ -1885,6 +1889,11 @@ inline void sec_ts_hc_dump(struct sec_ts_data *ts)
 	struct sec_ts_health_check last_hc[SEC_TS_HC_KFIFO_LEN];
 
 	len = kfifo_out_peek(&hc_fifo, last_hc, kfifo_size(&hc_fifo));
+	if (!len) {
+		input_err(true, &ts->client->dev, "%s: failed to peek hc\n",
+			  __func__);
+		return;
+	}
 	for (i = 0 ; i < len; i++) {
 		sec_delta = 0;
 		ms_delta = 0;
@@ -2045,6 +2054,16 @@ static void sec_ts_handle_coord_event(struct sec_ts_data *ts,
 
 		ts->coord[t_id].left_event = p_event_coord->left_event;
 
+		if (ts->coord[t_id].x > ts->plat_data->max_x) {
+			input_info(true, &ts->client->dev,
+				"%s: unexpected FW x-coord(%u)!\n", __func__, ts->coord[t_id].x);
+			ts->coord[t_id].x = ts->plat_data->max_x;
+		}
+		if (ts->coord[t_id].y > ts->plat_data->max_y) {
+			input_info(true, &ts->client->dev,
+				"%s: unexpected FW y-coord(%u)!\n", __func__, ts->coord[t_id].y);
+			ts->coord[t_id].y = ts->plat_data->max_y;
+		}
 		if (ts->coord[t_id].z <= 0)
 			ts->coord[t_id].z = 1;
 
@@ -4427,6 +4446,7 @@ static int sec_ts_fw_init(struct sec_ts_data *ts)
 	ts->dex_name = "";
 
 	ts->input_dev->name = "sec_touchscreen";
+	ts->input_dev->uniq = "google_touchscreen";
 	sec_ts_set_input_prop(ts, ts->input_dev, INPUT_PROP_DIRECT);
 #ifdef USE_OPEN_CLOSE
 	ts->input_dev->open = sec_ts_input_open;
@@ -6164,9 +6184,20 @@ struct drm_connector *get_bridge_connector(struct drm_bridge *bridge)
 static bool bridge_is_lp_mode(struct drm_connector *connector)
 {
 	if (connector && connector->state) {
-		struct exynos_drm_connector_state *s =
-			to_exynos_connector_state(connector->state);
-		return s->exynos_mode.is_lp_mode;
+		if (is_exynos_drm_connector(connector)) {
+			struct exynos_drm_connector_state *s =
+				to_exynos_connector_state(connector->state);
+
+			return s->exynos_mode.is_lp_mode;
+		}
+#if IS_ENABLED(CONFIG_GS_DRM_PANEL_UNIFIED)
+		else if (is_gs_drm_connector(connector)) {
+			struct gs_drm_connector_state *s =
+				to_gs_connector_state(connector->state);
+
+			return s->gs_mode.is_lp_mode;
+		}
+#endif
 	}
 	return false;
 }
@@ -6303,6 +6334,7 @@ static const struct of_device_id sec_ts_match_table[] = {
 	{ .compatible = "sec,sec_ts",},
 	{ },
 };
+MODULE_DEVICE_TABLE(of, sec_ts_match_table);
 #else
 #define sec_ts_match_table NULL
 #endif

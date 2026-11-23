@@ -133,7 +133,7 @@
 #define DO_FW_CHECKSUM			(1 << 0)
 #define DO_PARA_CHECKSUM		(1 << 1)
 #define MAX_SUPPORT_TOUCH_COUNT		10
-#define MAX_SUPPORT_HOVER_COUNT		1
+#define MAX_SUPPORT_HOVER_COUNT		0
 
 #define SEC_TS_EVENTID_HOVER		10
 
@@ -605,7 +605,7 @@ enum {
 
 #define SEC_TS_IO_RESET_CNT		3
 #define SEC_TS_IO_RETRY_CNT		3
-#define SEC_TS_WAIT_RETRY_CNT		100
+#define SEC_TS_WAIT_RETRY_CNT		10
 
 #define SEC_TS_MODE_CUSTOMLIB_SPAY			(1 << 1)
 #define SEC_TS_MODE_CUSTOMLIB_AOD			(1 << 2)
