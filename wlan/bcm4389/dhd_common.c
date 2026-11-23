@@ -1,7 +1,7 @@
 /*
  * Broadcom Dongle Host Driver (DHD), common DHD core.
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -493,6 +493,7 @@ enum {
 	IOV_TX_PROFILE_DUMP,
 #endif /* defined(DHD_TX_PROFILE) */
 	IOV_CHECK_TRAP_ROT,
+
 #ifdef DHD_LOGLEVEL
 	IOV_LOGLEVEL,
 #endif /* DHD_LOGLEVEL */
@@ -672,6 +673,7 @@ const bcm_iovar_t dhd_iovars[] = {
 	{"tx_profile_dump",	IOV_TX_PROFILE_DUMP,	0,	0,	IOVT_UINT32,	0},
 #endif /* defined(DHD_TX_PROFILE) */
 	{"check_trap_rot", IOV_CHECK_TRAP_ROT, (0), 0, IOVT_BOOL, 0},
+
 #ifdef DHD_LOGLEVEL
 	{"loglevel", IOV_LOGLEVEL, (0), 0, IOVT_BUFFER, sizeof(dhd_loglevel_data_t)},
 #endif /* DHD_LOGLEVEL */
@@ -5776,6 +5778,7 @@ wl_process_host_event(dhd_pub_t *dhd_pub, int *ifidx, void *pktdata, uint pktlen
 #if defined(RTT_SUPPORT)
 	case WLC_E_PROXD:
 #ifndef WL_CFG80211
+
 #endif /* WL_CFG80211 */
 		break;
 #endif /* RTT_SUPPORT */
@@ -9605,6 +9608,14 @@ dhd_tput_test(dhd_pub_t *dhd, tput_test_t *tput_data)
 		err_exit = BCME_BUSY;
 		goto exit_error;
 	}
+
+	if (tput_data->payload_size < TPUT_TEST_MIN_PAYLOAD_SIZE) {
+		DHD_ERROR(("%s: min payload size is %u !\n", __FUNCTION__,
+			TPUT_TEST_MIN_PAYLOAD_SIZE));
+		err_exit = BCME_BADOPTION;
+		goto exit_error;
+	}
+
 #ifdef PCIE_FULL_DONGLE
 	/*
 	 * 100 bytes to accommodate ether header and tput header. As of today

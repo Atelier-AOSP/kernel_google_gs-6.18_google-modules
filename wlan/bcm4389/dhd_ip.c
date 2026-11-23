@@ -1,7 +1,7 @@
 /*
  * IP Packet Parser Module.
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -993,12 +993,10 @@ dhd_tcpdata_info_get(dhd_pub_t *dhdp, void *pkt)
 	tcp_hdr_len = 4 * TCP_HDRLEN(tcp_hdr[TCP_HLEN_OFFSET]);
 
 	/* This packet is mere TCP ACK, so do nothing */
-	if (ip_total_len == ip_hdr_len + tcp_hdr_len) {
+	if (ip_total_len <= ip_hdr_len + tcp_hdr_len) {
 		DHD_TRACE(("%s %d: Do nothing for no data TCP ACK\n", __FUNCTION__, __LINE__));
 		goto exit;
 	}
-
-	ASSERT(ip_total_len > ip_hdr_len + tcp_hdr_len);
 
 	if ((tcp_hdr[TCP_FLAGS_OFFSET] & TCP_FLAG_PSH) == 0) {
 		DHD_TRACE(("%s %d: Not interested TCP DATA packet\n", __FUNCTION__, __LINE__));

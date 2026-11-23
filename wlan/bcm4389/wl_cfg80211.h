@@ -1,7 +1,7 @@
 /*
  * Linux cfg80211 driver
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -781,6 +781,8 @@ do {									\
 #define WLAN_CIPHER_SUITE_PMK			0x00904C00
 #endif /* WLAN_CIPHER_SUITE_PMK */
 
+#define WLAN_AKM_SUITE_PSK_VER_1                0x0050F202
+
 #ifndef WLAN_AKM_SUITE_FT_8021X
 #define WLAN_AKM_SUITE_FT_8021X			0x000FAC03
 #endif /* WLAN_AKM_SUITE_FT_8021X */
@@ -802,7 +804,6 @@ do {									\
 #define WL_AKM_SUITE_SHA256_PSK 0x000FAC06
 
 #define WLAN_AKM_SUITE_SAE_SHA256		0x000FAC08
-#define WLAN_AKM_SUITE_SAE_EXT			0x000FAC24
 #define MAX_NUM_MULTI_AKM_SUITES		4u
 
 #ifndef WLAN_AKM_SUITE_FILS_SHA256
@@ -1140,7 +1141,7 @@ struct beacon_proberesp {
 	__le64 timestamp;
 	__le16 beacon_int;
 	__le16 capab_info;
-	u8 variable[];
+	u8 variable[0];
 } __attribute__ ((packed));
 
 /* driver configuration */
@@ -1851,6 +1852,7 @@ typedef struct wlcfg_assoc_info {
 	u32 allowed_key_mgmts;  /* Keep multi akms except the best akm current trying */
 	bool auto_wpa_enabled;	/* auto_wpa enabled for multi AKM */
 	bool seamless_psk;	/* Multi-AKMs needing seamless PSK */
+	bool skip_seamless_psk;
 } wlcfg_assoc_info_t;
 
 #define MAX_NUM_OF_ASSOCIATED_DEV       64
@@ -3032,10 +3034,8 @@ wl_iftype_to_str(int wl_iftype)
 	wdev_to_ndev(wdev) : bcmcfg_to_prmry_ndev(cfg))
 #if defined(WL_CFG80211_P2P_DEV_IF)
 #define cfgdev_to_wlc_ndev(cfgdev, cfg)	wdev_to_wlc_ndev(cfgdev, cfg)
-#define cfgdev_to_wlc_wdev(cfgdev) (cfgdev)
 #define bcmcfg_to_prmry_cfgdev(cfgdev, cfg) bcmcfg_to_prmry_wdev(cfg)
 #else
-#error "FIXME: cfgdev_to_wlc_wdev() not supported"
 #define cfgdev_to_wlc_ndev(cfgdev, cfg)	(cfgdev)
 #define bcmcfg_to_prmry_cfgdev(cfgdev, cfg) (cfgdev)
 #endif /* WL_CFG80211_P2P_DEV_IF */
@@ -3132,6 +3132,8 @@ wl_iftype_to_str(int wl_iftype)
 
 #define IS_AKM_SUITE_SAE_FT(sec) (sec->wpa_auth == WLAN_AKM_SUITE_FT_OVER_SAE)
 #define IS_AKM_SUITE_CCKM(sec) ({BCM_REFERENCE(sec); FALSE;})
+#define IS_CIPHER_WEP(cipher) (cipher == WLAN_CIPHER_SUITE_WEP40) || \
+				(cipher == WLAN_CIPHER_SUITE_WEP104)
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 0, 0))
 #define STA_INFO_BIT(info) (1ul << NL80211_STA_ ## info)
@@ -3579,6 +3581,7 @@ extern s32 wl_update_prof(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 extern s32 wl_handle_auth_event(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	const wl_event_msg_t *e, void *data);
 #endif /* WL_CLIENT_SAE */
+
 #ifdef WL_CFGVENDOR_SEND_ALERT_EVENT
 extern int wl_cfg80211_alert(struct net_device *dev);
 #endif /* WL_CFGVENDOR_SEND_ALERT_EVENT */
@@ -3714,4 +3717,5 @@ struct wl_cp_coex {
 	int ch_5g;
 };
 #endif /* WL_CP_COEX */
+extern s32 wl_validate_bss_length(uint32 version, uint32 tot_len, uint32 ie_length);
 #endif /* _wl_cfg80211_h_ */

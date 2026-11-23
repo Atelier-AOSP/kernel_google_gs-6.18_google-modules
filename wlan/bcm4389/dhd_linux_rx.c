@@ -2,7 +2,7 @@
  * Broadcom Dongle Host Driver (DHD),
  * Linux-specific network interface for receive(rx) path
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -63,6 +63,7 @@
 #include <linux/rtc.h>
 #include <linux/namei.h>
 #include <asm/uaccess.h>
+#include <asm/unaligned.h>
 #include <dhd_linux_priv.h>
 
 #include <epivers.h>
@@ -358,9 +359,7 @@ dhd_rx_frame(dhd_pub_t *dhdp, int ifidx, void *pktbuf, int numpkt, uint8 chan)
 				qdisc = dev_ingress_queue(ifp->net)->qdisc_sleeping;
 				if (qdisc != NULL && (qdisc->flags & TCQ_F_INGRESS)) {
 #ifdef CONFIG_NET_CLS_ACT
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
-					if (ifp->net->tcx_ingress != NULL)
-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
 					if (ifp->net->miniq_ingress != NULL)
 #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0))
 					if (ifp->net->ingress_cl_list != NULL)
@@ -992,7 +991,10 @@ dhd_rx_frame(dhd_pub_t *dhdp, int ifidx, void *pktbuf, int numpkt, uint8 chan)
 			ifp->stats.rx_bytes += skb->len;
 			ifp->stats.rx_packets++;
 		}
-
+#ifdef DHD_PRINT_RXPKTS_TRACE
+		DHD_ERROR(("dhd_rx_frame: netif_rx p=%p pdata=%p len=%d\n", skb,
+			skb->data, skb->len));
+#endif /* DHD_PRINT_RXPKTS_TRACE */
 		/* XXX WL here makes sure data is 4-byte aligned? */
 		if (in_interrupt()) {
 			bcm_object_trace_opr(skb, BCM_OBJDBG_REMOVE,

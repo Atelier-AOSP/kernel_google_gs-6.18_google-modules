@@ -1,7 +1,7 @@
 /*
  * Linux DHD Bus Module for PCIE
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -270,6 +270,7 @@ static const struct dev_pm_ops dhd_pcie_pm_ops = {
 #endif /* DHD_PCIE_RUNTIMEPM */
 
 static struct pci_driver dhdpcie_driver = {
+	node:		{&dhdpcie_driver.node, &dhdpcie_driver.node},
 	name:		"pcieh",
 	id_table:	dhdpcie_pci_devid,
 	probe:		dhdpcie_pci_probe,
@@ -288,11 +289,11 @@ char dhd_suspend_resume_time_str[DEBUG_DUMP_TIME_BUF_LEN];
 static int dhdpcie_smmu_init(struct pci_dev *pdev, void *smmu_cxt)
 {
 	struct dma_iommu_mapping *mapping;
-	struct device_node *root_node;
+	struct device_node *root_node = NULL;
 	dhdpcie_smmu_info_t *smmu_info = (dhdpcie_smmu_info_t *)smmu_cxt;
 	int smmu_iova_address[2];
-	const char *wlan_node = "android,bcmdhd_wlan";
-	const char *wlan_smmu_node = "wlan-smmu-iova-address";
+	char *wlan_node = "android,bcmdhd_wlan";
+	char *wlan_smmu_node = "wlan-smmu-iova-address";
 	int atomic_ctx = 1;
 	int s1_bypass = 1;
 	int ret = 0;
@@ -305,10 +306,8 @@ static int dhdpcie_smmu_init(struct pci_dev *pdev, void *smmu_cxt)
 		return -ENODEV;
 	}
 
-	ret = of_property_read_u32_array(root_node, wlan_smmu_node,
-					 smmu_iova_address, 2);
-	of_node_put(root_node);
-	if (ret == 0) {
+	if (of_property_read_u32_array(root_node, wlan_smmu_node,
+		smmu_iova_address, 2) == 0) {
 		DHD_ERROR(("%s : get SMMU start address 0x%x, size 0x%x\n",
 			__FUNCTION__, smmu_iova_address[0], smmu_iova_address[1]));
 		smmu_info->smmu_iova_start = smmu_iova_address[0];
@@ -1860,7 +1859,9 @@ dhdpcie_request_irq(dhdpcie_info_t *dhdpcie_info)
 		DHD_ERROR(("%s: PCI IRQ is already registered\n", __FUNCTION__));
 	}
 
-	dhdpcie_enable_irq_loop(bus);
+	if (dhdpcie_irq_disabled(bus)) {
+		dhdpcie_enable_irq(bus);
+	}
 
 	DHD_TRACE(("%s %s\n", __FUNCTION__, dhdpcie_info->pciname));
 
@@ -2473,16 +2474,6 @@ dhdpcie_enable_irq(dhd_bus_t *bus)
 	dev = bus->dev;
 	enable_irq(dev->irq);
 	return BCME_OK;
-}
-
-void
-dhdpcie_enable_irq_loop(dhd_bus_t *bus)
-{
-	/* Enable IRQ in a loop till host_irq_disable_count becomes 0 */
-	uint host_irq_disable_count = dhdpcie_irq_disabled(bus);
-	while (host_irq_disable_count--) {
-		dhdpcie_enable_irq(bus); /* Enable back interrupt!! */
-	}
 }
 
 int

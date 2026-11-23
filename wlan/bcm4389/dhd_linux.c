@@ -2,7 +2,7 @@
  * Broadcom Dongle Host Driver (DHD), Linux-specific network interface.
  * Basically selected code segments from usb-cdc.c and usb-rndis.c
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -61,6 +61,7 @@
 #endif /* ENABLE_ADAPTIVE_SCHED */
 #include <linux/rtc.h>
 #include <asm/uaccess.h>
+#include <asm/unaligned.h>
 #include <dhd_linux_priv.h>
 
 #include <epivers.h>
@@ -6919,6 +6920,12 @@ dhd_open(struct net_device *net)
 	int32 ret = 0;
 
 	DHD_ERROR(("%s: ENTER\n", __FUNCTION__));
+
+	if (OSL_ATOMIC_READ(dhdp->osh, &reboot_in_progress) >= 0) {
+		DHD_ERROR(("%s: failed to open. reboot in progress", __FUNCTION__));
+		return BCME_ERROR;
+	}
+
 #if defined(PREVENT_REOPEN_DURING_HANG)
 	/* WAR : to prevent calling dhd_open abnormally in quick succession after hang event */
 	if (dhd->pub.hang_was_sent == 1) {
@@ -8337,6 +8344,7 @@ dhd_lookup_map(osl_t *osh, char *fname, uint32 pc, char *pc_fn,
 	char func2[DHD_FUNC_STR_LEN] = "\0";
 	uint8 count = 0;
 	int num, len = 0, offset;
+	int alloc_size;
 
 	DHD_TRACE(("%s: fname %s pc 0x%x lr 0x%x \n",
 		__FUNCTION__, fname, pc, lr));
@@ -8346,7 +8354,8 @@ dhd_lookup_map(osl_t *osh, char *fname, uint32 pc, char *pc_fn,
 	}
 
 	/* Allocate 1 byte more than read_size to terminate it with NULL */
-	raw_fmts = MALLOCZ(osh, read_size + 1);
+	alloc_size = read_size + 1;
+	raw_fmts = MALLOCZ(osh, alloc_size);
 	if (raw_fmts == NULL) {
 		DHD_ERROR(("%s: Failed to allocate raw_fmts memory \n",
 			__FUNCTION__));
@@ -8538,6 +8547,9 @@ fail:
 	}
 	if (!(count & LR_FOUND_BIT)) {
 		sprintf(lr_fn, "0x%08x", lr);
+	}
+	if (raw_fmts) {
+		MFREE(osh, raw_fmts, alloc_size);
 	}
 	return err;
 }
@@ -14087,22 +14099,22 @@ dhd_bus_detach(dhd_pub_t *dhdp)
 	}
 }
 
-void dhd_detach(dhd_pub_t *dhdp)
+void
+dhd_pri_dev_close(dhd_pub_t *dhdp)
 {
 	dhd_info_t *dhd;
-	unsigned long flags;
-	int timer_valid = FALSE;
-	struct net_device *dev = NULL;
 	dhd_if_t *ifp;
-#ifdef WL_CFG80211
-	struct bcm_cfg80211 *cfg = NULL;
-#endif
-	if (!dhdp)
-		return;
+	struct net_device *dev = NULL;
 
 	dhd = (dhd_info_t *)dhdp->info;
 	if (!dhd)
 		return;
+
+	DHD_PRINT(("%s\n", __FUNCTION__));
+
+#ifdef DHD_PCIE_RUNTIMEPM
+	dhdpcie_runtime_bus_wake(dhdp, TRUE, dhd_pri_dev_close);
+#endif /* DHD_PCIE_RUNTIMEPM */
 
 	/* primary interface 0 */
 	ifp = dhd->iflist[0];
@@ -14123,6 +14135,26 @@ void dhd_detach(dhd_pub_t *dhdp)
 		}
 		rtnl_unlock();
 	}
+}
+
+void dhd_detach(dhd_pub_t *dhdp)
+{
+	dhd_info_t *dhd;
+	unsigned long flags;
+	int timer_valid = FALSE;
+	dhd_if_t *ifp;
+#ifdef WL_CFG80211
+	struct bcm_cfg80211 *cfg = NULL;
+#endif
+	if (!dhdp)
+		return;
+
+	dhd = (dhd_info_t *)dhdp->info;
+	if (!dhd)
+		return;
+
+	/* primary interface 0 */
+	ifp = dhd->iflist[0];
 
 	DHD_TRACE(("%s: Enter state 0x%x\n", __FUNCTION__, dhd->dhd_state));
 
@@ -14704,6 +14736,12 @@ dhd_module_cleanup(void)
 #endif /* ENABLE_NOT_LOAD_DHD_MODULE */
 	DHD_TRACE(("%s: Enter\n", __FUNCTION__));
 
+#ifdef DHD_COREDUMP
+	dhd_plat_unregister_coredump();
+#endif /* DHD_COREDUMP */
+
+	dhd_pri_dev_close(g_dhd_pub);
+
 #ifdef BCMDBUS
 	dbus_deregister();
 #else
@@ -14741,7 +14779,7 @@ _dhd_module_init(void)
 	int err;
 	int retry = POWERUP_MAX_RETRY;
 
-	DHD_ERROR(("%s in\n", __FUNCTION__));
+	DHD_PRINT(("%s in, retry=%d\n", __FUNCTION__, retry));
 
 #ifdef DHD_BUZZZ_LOG_ENABLED
 	dhd_buzzz_attach();
@@ -14813,6 +14851,9 @@ _dhd_module_init(void)
 		if (!dhd_download_fw_on_driverload) {
 			dhd_driver_init_done = TRUE;
 		}
+#ifdef DHD_COREDUMP
+		dhd_plat_register_coredump();
+#endif /* DHD_COREDUMP */
 	}
 
 	DHD_ERROR(("%s out\n", __FUNCTION__));
@@ -19198,6 +19239,11 @@ void dhd_schedule_memdump(dhd_pub_t *dhdp, uint8 *buf, uint32 size)
 #endif /* DHD_LOG_DUMP */
 		return;
 	}
+#ifdef DHD_DUMP_RXPKTIDMAP
+	else if (dhdp->memdump_type == DUMP_TYPE_BY_SYSDUMP) {
+		dhd_dump_rxpktidmap(dhdp);
+	}
+#endif /* DHD_DUMP_RXPKTIDMAP */
 
 	dhd_info->scheduled_memdump = TRUE;
 
@@ -21893,7 +21939,7 @@ dhd_print_kirqstats(dhd_pub_t *dhd, unsigned int irq_num)
 	bcm_bprintf(&strbuf, "dhd irq %u:", irq_num);
 	for_each_online_cpu(i)
 		bcm_bprintf(&strbuf, "%10u ",
-			per_cpu(desc->kstat_irqs->cnt, i));
+			desc->kstat_irqs ? *per_cpu_ptr(desc->kstat_irqs, i) : 0);
 	if (desc->irq_data.chip) {
 		if (desc->irq_data.chip->name)
 			bcm_bprintf(&strbuf, " %8s", desc->irq_data.chip->name);

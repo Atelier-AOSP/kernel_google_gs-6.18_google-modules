@@ -3,7 +3,7 @@
  * Provides type definitions and function prototypes used to link the
  * DHD OS, bus, and protocol modules.
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -29,7 +29,6 @@
 
 #include <typedefs.h>
 #include <osl.h>
-#include <linux/sched/clock.h>
 
 #include <bcmutils.h>
 #include <bcmmsgbuf.h>
@@ -2001,7 +2000,7 @@ typedef struct dhd_pktid_log_item {
 typedef struct dhd_pktid_log {
 	uint32 items;		/* number of total items */
 	uint32 index;		/* index of pktid_log_item */
-	dhd_pktid_log_item_t map[];	/* metadata storage */
+	dhd_pktid_log_item_t map[0];	/* metadata storage */
 } dhd_pktid_log_t;
 
 typedef void * dhd_pktid_log_handle_t; /* opaque handle to pktid log */
@@ -2442,7 +2441,7 @@ typedef struct dhd_pktid_map {
 	struct bcm_mwbmap *pktid_audit; /* multi word bitmap based audit */
 #endif /* DHD_PKTID_AUDIT_ENABLED */
 	dhd_pktid_key_t	*keys; /* map_items +1 unique pkt ids */
-	dhd_pktid_item_t lockers[];	/* metadata storage */
+	dhd_pktid_item_t lockers[0];           /* metadata storage */
 } dhd_pktid_map_t;
 
 /*
@@ -2792,6 +2791,55 @@ error:
 	return (dhd_pktid_map_handle_t *)NULL;
 }
 
+#ifdef DHD_DUMP_RXPKTIDMAP
+/**
+ * Retrieve all allocated keys for a given map and print the
+ * "pkt pktdata len" for each allocated key
+ */
+static void
+dhd_pktid_map_dump(dhd_pub_t *dhd, dhd_pktid_map_handle_t *handle)
+{
+	void *osh;
+	uint32 nkey;
+	dhd_pktid_map_t *map;
+	dhd_pktid_item_t *locker;
+	uint32 map_items;
+	unsigned long flags;
+	void *pkt;
+	uint32 count = 0;
+
+	if (handle == NULL) {
+		return;
+	}
+
+	map = (dhd_pktid_map_t *)handle;
+	DHD_PKTID_LOCK(map->pktid_lock, flags);
+	osh = dhd->osh;
+
+	map_items = DHD_PKIDMAP_ITEMS(map->items);
+	/* skip reserved KEY #0, and start from 1 */
+
+	DHD_ERROR(("pktid map dump map_items=%d avail=%d\n", map_items, map->avail));
+	for (nkey = 1; nkey <= map_items; nkey++) {
+		if (map->lockers[nkey].state == LOCKER_IS_BUSY) {
+			locker = &map->lockers[nkey];
+			pkt = locker->pkt;
+			count++;
+			DHD_ERROR(("<%d> nkey<%d> pkt<%p> data<%p> len<%d>\n", count, nkey,
+				pkt, PKTDATA(osh, pkt), PKTLEN(osh, pkt)));
+		}
+	}
+
+	DHD_PKTID_UNLOCK(map->pktid_lock, flags);
+}
+
+void
+dhd_dump_rxpktidmap(dhd_pub_t *dhd)
+{
+	DHD_ERROR(("** pktid map dump for RX **\n"));
+	dhd_pktid_map_dump(dhd, dhd->prot->pktid_rx_map);
+}
+#endif /* DHD_DUMP_RXPKTIDMAP */
 /**
  * Retrieve all allocated keys and free all <numbered_key, locker>.
  * Freeing implies: unmapping the buffers and freeing the native packet
@@ -4111,9 +4159,9 @@ dhd_msgbuf_agg_h2d_db_timer_init(dhd_pub_t *dhd)
 	agg_h2d_db_info_t *agg_db_info = &prot->agg_h2d_db_info;
 
 	agg_db_info->dhd = dhd;
+	hrtimer_init(&agg_db_info->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	/* The timer function will run from ISR context, ensure no spin_lock_bh are used */
-	hrtimer_setup(&agg_db_info->timer, dhd_msgbuf_agg_h2d_db_timer_fn,
-		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	agg_db_info->timer.function = &dhd_msgbuf_agg_h2d_db_timer_fn;
 	agg_db_info->init = TRUE;
 	agg_db_info->timer_db_cnt = 0;
 	agg_db_info->direct_db_cnt = 0;
@@ -5352,6 +5400,12 @@ int dhd_sync_with_dongle(dhd_pub_t *dhd)
 	}
 	DHD_ERROR(("%s: GET_REVINFO device 0x%x, vendor 0x%x, chipnum 0x%x\n", __FUNCTION__,
 		revinfo.deviceid, revinfo.vendorid, revinfo.chipnum));
+	if (((revinfo.deviceid == 0U) || (revinfo.deviceid == 0xFFFFFFFFU)) ||
+		((revinfo.vendorid == 0U) || (revinfo.vendorid == 0xFFFFFFFFU)) ||
+		((revinfo.chipnum  == 0U) || (revinfo.chipnum  == 0xFFFFFFFFU))) {
+		DHD_ERROR(("%s: revinfo returned invalid values\n", __FUNCTION__));
+		goto done;
+	}
 
 	/* Get the RxBuf post size */
 	/* Use default value in case of failure */
@@ -5371,8 +5425,9 @@ int dhd_sync_with_dongle(dhd_pub_t *dhd)
 				DHD_ERROR(("%s: rxbufpost_sz memcpy failed\n", __FUNCTION__));
 			}
 
-			if (prot->rxbufpost_sz > DHD_FLOWRING_RX_BUFPOST_PKTSZ_MAX) {
-				DHD_ERROR(("%s: Invalid RxBuf post size : %d, default to %d\n",
+			if ((prot->rxbufpost_sz == 0) ||
+				(prot->rxbufpost_sz > DHD_FLOWRING_RX_BUFPOST_PKTSZ_MAX)) {
+				DHD_ERROR(("%s: invalid RxBuf post size : %d, default to %d\n",
 					__FUNCTION__, prot->rxbufpost_sz,
 					DHD_FLOWRING_RX_BUFPOST_PKTSZ));
 					prot->rxbufpost_sz = DHD_FLOWRING_RX_BUFPOST_PKTSZ;
@@ -5756,7 +5811,10 @@ BCMFASTPATH(dhd_prot_rxbuf_post)(dhd_pub_t *dhd, uint16 count, bool use_rsv_pkti
 			PKTSETLEN(dhd->osh, p, prot->rxbufpost_sz);
 			DHD_TRACE(("%s: pktlen after: %d\n", __FUNCTION__, PKTLEN(dhd->osh, p)));
 		}
-
+#ifdef DHD_PRINT_RXPKTS_TRACE
+		DHD_ERROR(("dhd_prot_rxbuf_post: alloc p=%p pdata=%p len=%d\n", p,
+			PKTDATA(dhd->osh, p), PKTLEN(dhd->osh, p)));
+#endif /* DHD_PRINT_RXPKTS_TRACE */
 #ifdef BCM_ROUTER_DHD
 		/* Reserve extra headroom for router builds */
 		PKTPULL(dhd->osh, p, BCMEXTRAHDROOM);
@@ -5906,6 +5964,10 @@ cleanup:
 
 		DMA_UNMAP(dhd->osh, pa, pktlen[i], DMA_RX, 0, DHD_DMAH_NULL);
 		PKTFREE(dhd->osh, p, FALSE);
+#ifdef DHD_PRINT_RXPKTS_TRACE
+		DHD_ERROR(("dhd_prot_rxbuf_post: cleanup_free p=%p pdata=%p len=%d\n", p,
+			PKTDATA(dhd->osh, p), PKTLEN(dhd->osh, p)));
+#endif /* DHD_PRINT_RXPKTS_TRACE */
 	}
 
 	MFREE(dhd->osh, lcl_buf, lcl_buf_size);
@@ -6747,6 +6809,13 @@ dhd_prot_process_edl_complete(dhd_pub_t *dhd, void *evt_decode_data)
 	n = max_items_to_process;
 	while (n > 0) {
 		msg = (cmn_msg_hdr_t *)msg_addr;
+
+		/* Don't process further if any bus error has occurred */
+		if (dhd_query_bus_erros(dhd)) {
+			DHD_ERROR_RLMT(("%s: quitting due to dhd_query_bus_erros\n", __FUNCTION__));
+			return 0;
+		}
+
 		/* wait for DMA of work item to complete */
 		if ((err = dhd->prot->d2h_edl_sync_cb(dhd, ring, msg)) != BCME_OK) {
 			DHD_ERROR(("%s: Error waiting for DMA to cmpl in EDL ring; err = %d\n",
@@ -6931,6 +7000,7 @@ BCMFASTPATH(dhd_prot_process_msgbuf_rxcpl)(dhd_pub_t *dhd, int ringtype, uint32 
 	int i;
 	uint8 sync;
 	unsigned long rx_lock_flags = 0;
+	uint16 fw_len = 0;
 
 #ifdef DHD_LB_RXP
 	/* must be the first check in this function */
@@ -6987,6 +7057,14 @@ BCMFASTPATH(dhd_prot_process_msgbuf_rxcpl)(dhd_pub_t *dhd, int ringtype, uint32 
 
 		while (msg_len > 0) {
 			msg = (host_rxbuf_cmpl_t *)msg_addr;
+			fw_len = ltoh16(msg->data_len);
+
+			/* Don't process further if any bus error has occurred */
+			if (dhd_query_bus_erros(dhd)) {
+				DHD_ERROR_RLMT(("%s: quitting due to dhd_query_bus_erros\n",
+					__FUNCTION__));
+				break;
+			}
 
 			/* Wait until DMA completes, then fetch msg_type */
 			sync = prot->d2h_sync_cb(dhd, ring, &msg->cmn_hdr, item_len);
@@ -7112,8 +7190,13 @@ BCMFASTPATH(dhd_prot_process_msgbuf_rxcpl)(dhd_pub_t *dhd, int ringtype, uint32 
 				/* DMA RX offset updated through shared area */
 				PKTPULL(dhd->osh, pkt, prot->rx_dataoffset);
 			}
-			/* Actual length of the packet */
-			PKTSETLEN(dhd->osh, pkt, ltoh16(msg->data_len));
+
+			if (fw_len > PKTLEN(dhd->osh, pkt)) {
+				DHD_ERROR(("%s: dongle data_len %u > posted %u\n",
+					__FUNCTION__, fw_len, PKTLEN(dhd->osh, pkt)));
+				fw_len = (uint16)PKTLEN(dhd->osh, pkt);
+			}
+			PKTSETLEN(dhd->osh, pkt, fw_len);
 
 #if defined(WL_MONITOR)
 			if (dhd_monitor_enabled(dhd, ifidx)) {
@@ -7513,6 +7596,12 @@ BCMFASTPATH(dhd_prot_process_msgtype)(dhd_pub_t *dhd, msgbuf_ring_t *ring, uint8
 
 		msg = (cmn_msg_hdr_t *)buf;
 
+		/* Don't process further if any bus error has occurred */
+		if (dhd_query_bus_erros(dhd)) {
+			DHD_ERROR_RLMT(("%s: quitting due to dhd_query_bus_erros\n", __FUNCTION__));
+			ret = BCME_ERROR;
+			goto done;
+		}
 		/* Wait until DMA completes, then fetch msg_type */
 		msg_type = dhd->prot->d2h_sync_cb(dhd, ring, msg, item_len);
 
@@ -8216,6 +8305,12 @@ dhd_prot_event_process(dhd_pub_t *dhd, void *msg)
 		PKTPULL(dhd->osh, pkt, dhd->prot->rx_dataoffset);
 #endif /* !BCM_ROUTER_DHD */
 
+	if (buflen > PKTLEN(dhd->osh, pkt)) {
+		DHD_ERROR(("%s: dongle event_data_len %u posted buf %u clamping\n",
+			__FUNCTION__, buflen, PKTLEN(dhd->osh, pkt)));
+		buflen = (uint16)PKTLEN(dhd->osh, pkt);
+	}
+
 	PKTSETLEN(dhd->osh, pkt, buflen);
 #ifdef DHD_LBUF_AUDIT
 	PKTAUDIT(dhd->osh, pkt);
@@ -8268,6 +8363,12 @@ BCMFASTPATH(dhd_prot_process_infobuf_complete)(dhd_pub_t *dhd, void* buf)
 	if (dhd->prot->rx_dataoffset)
 		PKTPULL(dhd->osh, pkt, dhd->prot->rx_dataoffset);
 #endif /* !BCM_ROUTER_DHD */
+
+	if (buflen > PKTLEN(dhd->osh, pkt)) {
+		DHD_ERROR(("%s: dongle info_data_len %u posted buf %u clamping\n",
+			__FUNCTION__, buflen, PKTLEN(dhd->osh, pkt)));
+		buflen = (uint16)PKTLEN(dhd->osh, pkt);
+	}
 
 	PKTSETLEN(dhd->osh, pkt, buflen);
 #ifdef DHD_LBUF_AUDIT

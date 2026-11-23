@@ -1,7 +1,7 @@
 /*
  * Header for Linux cfg80211 scan
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -86,8 +86,6 @@ extern void wl_cfg80211_abort_scan(struct wiphy *wiphy, struct wireless_dev *wde
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)) */
 extern s32 wl_init_scan(struct bcm_cfg80211 *cfg);
 extern int wl_cfg80211_scan_stop(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev);
-extern s32 wl_notify_scan_status(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
-	const wl_event_msg_t *e, void *data);
 extern void wl_cfg80211_set_passive_scan(struct net_device *dev, char *command);
 #ifdef PNO_SUPPORT
 extern s32 wl_notify_pfn_status(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
@@ -102,7 +100,7 @@ extern s32 wl_notify_gscan_event(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cf
 extern s32 wl_cfgscan_pfn_scanresult_handler(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	const wl_event_msg_t *e, void *data);
 extern s32 wl_cfgscan_pfn_handler(struct bcm_cfg80211 *cfg,
-	wl_pfn_scanresult_v3_1_t *pfn_scanresult);
+	wl_pfn_scanresult_v3_1_t *pfn_scanresult, u32 total_event_len);
 #endif /* WL_SCHED_SCAN */
 
 #if defined(GSCAN_SUPPORT) || defined(WL_SCHED_SCAN)
@@ -149,12 +147,11 @@ extern s32 wl_cfgscan_notify_listen_complete(struct bcm_cfg80211 *cfg);
 extern s32 wl_cfgscan_cancel_listen_on_channel(struct bcm_cfg80211 *cfg, bool notify_user);
 #if defined(WL_CFG80211_P2P_DEV_IF)
 extern s32 wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
-	struct ieee80211_channel *channel, unsigned int duration, u64 *cookie,
-	const u8 *rx_addr);
+	struct ieee80211_channel *channel, unsigned int duration, u64 *cookie);
 #else
 extern s32 wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 	struct ieee80211_channel *channel, enum nl80211_channel_type channel_type,
-	unsigned int duration, u64 *cookie, const u8 *rx_addr);
+	unsigned int duration, u64 *cookie);
 #endif /* WL_CFG80211_P2P_DEV_IF */
 extern s32 wl_cfgscan_cancel_remain_on_channel(struct wiphy *wiphy,
 	bcm_struct_cfgdev *cfgdev, u64 cookie);

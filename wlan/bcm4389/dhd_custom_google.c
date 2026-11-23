@@ -1,7 +1,7 @@
 /*
  * Platform Dependent file for Hikey
  *
- * Copyright (C) 2024, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -24,7 +24,6 @@
  *
  */
 
-#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -50,8 +49,6 @@
 #ifdef DHD_COREDUMP
 #include <linux/platform_data/sscoredump.h>
 #endif /* DHD_COREDUMP */
-
-#include <bcmstdlib_s.h>
 
 #define EXYNOS_PCIE_VENDOR_ID 0x144d
 #if defined(CONFIG_SOC_GOOGLE)
@@ -108,6 +105,7 @@ static void sscd_release(struct device *dev);
 static struct sscd_platform_data sscd_pdata;
 static struct platform_device sscd_dev = {
 	.name            = DEVICE_NAME,
+	.driver_override = SSCD_NAME,
 	.id              = -1,
 	.dev             = {
 		.platform_data = &sscd_pdata,
@@ -197,7 +195,6 @@ dhd_wlan_init_mac_addr(void)
 		mac_addr = (unsigned char *)
 				of_get_property(node, WIFI_MAC, &size);
 	}
-	of_node_put(node);
 
 	/* In case Missing Provisioned MAC Address, exit with error */
 	if (!mac_addr) {
@@ -429,7 +426,7 @@ int
 dhd_wlan_init_hardware_info(void)
 {
 
-	struct device_node *node __free(device_node);
+	struct device_node *node = NULL;
 	const char *hw_sku = NULL;
 	int hw_stage = -1;
 	int hw_major = -1;
@@ -486,8 +483,6 @@ dhd_wlan_init_hardware_info(void)
 				strcpy(val_revision, "NA");
 				break;
 		}
-
-		of_node_put(node);
 	}
 
 	node = of_find_node_by_path(CDB_PATH);
@@ -522,8 +517,8 @@ dhd_wifi_init_gpio(void)
 {
 	int gpio_reg_on_val;
 	/* ========== WLAN_PWR_EN ============ */
-	const char *wlan_node = DHD_DT_COMPAT_ENTRY;
-	struct device_node *root_node __free(device_node);
+	char *wlan_node = DHD_DT_COMPAT_ENTRY;
+	struct device_node *root_node = NULL;
 
 	root_node = of_find_compatible_node(NULL, NULL, wlan_node);
 	if (!root_node) {
@@ -641,8 +636,8 @@ static int
 dhd_wlan_set_carddetect(int val)
 {
 #ifdef EXYNOS_PCIE_RC_ONOFF
-	struct device_node *root_node __free(device_node);
-	const char *wlan_node = DHD_DT_COMPAT_ENTRY;
+	struct device_node *root_node = NULL;
+	char *wlan_node = DHD_DT_COMPAT_ENTRY;
 
 	root_node = of_find_compatible_node(NULL, NULL, wlan_node);
 	if (!root_node) {
@@ -890,11 +885,6 @@ dhd_wlan_init(void)
 	}
 #endif /* CONFIG_BROADCOM_WIFI_RESERVED_MEM */
 
-#ifdef DHD_COREDUMP
-	device_set_driver_override(&sscd_dev.dev, SSCD_NAME);
-	platform_device_register(&sscd_dev);
-#endif /* DHD_COREDUMP */
-
 	ret = dhd_wifi_init_gpio();
 	if (ret < 0) {
 		DHD_ERROR(("%s: failed to initiate GPIO, ret=%d\n",
@@ -925,13 +915,12 @@ dhd_wlan_deinit(void)
 	if (gpio_is_valid(wlan_host_wake_up)) {
 		gpio_free(wlan_host_wake_up);
 	}
+
+	/* drive wl_reg_on low before freeing gpio */
+	dhd_wlan_power(0);
 	if (gpio_is_valid(wlan_reg_on)) {
 		gpio_free(wlan_reg_on);
 	}
-
-#ifdef DHD_COREDUMP
-	platform_device_unregister(&sscd_dev);
-#endif /* DHD_COREDUMP */
 
 	return 0;
 }
@@ -1016,6 +1005,20 @@ uint16 dhd_plat_align_rxbuf_size(uint16 rxbufpost_sz)
 	return rxbufpost_sz;
 #endif
 }
+
+#ifdef DHD_COREDUMP
+void
+dhd_plat_register_coredump(void)
+{
+	platform_device_register(&sscd_dev);
+}
+
+void
+dhd_plat_unregister_coredump(void)
+{
+	platform_device_unregister(&sscd_dev);
+}
+#endif /* DHD_COREDUMP */
 
 #ifndef BCMDHD_MODULAR
 /* Required only for Built-in DHD */
