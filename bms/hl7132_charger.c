@@ -905,7 +905,7 @@ error:
 	return ret;
 }
 
-static int hl7132_get_iin(struct hl7132_charger *hl7132, int *iin)
+static int hl7132_get_iin_original(struct hl7132_charger *hl7132, int *iin)
 {
 	const int offset = 0;
 	int temp;
@@ -917,8 +917,21 @@ static int hl7132_get_iin(struct hl7132_charger *hl7132, int *iin)
 	if (temp < offset)
 		temp = offset;
 
-	*iin = (temp - offset) * 2; /* 2:1 */
+	*iin = (temp - offset);
 	return 0;
+}
+
+static int hl7132_get_iin(struct hl7132_charger *hl7132, int *iin)
+{
+    int ret;
+    int temp;
+
+    ret = hl7132_get_iin_original(hl7132, &temp);
+    if (ret < 0)
+        return ret;
+
+    *iin = temp * 2; /* 2:1 */
+    return 0;
 }
 
 static int hl7132_get_batt_info(struct hl7132_charger *hl7132, int info_type, int *info)
@@ -4175,6 +4188,13 @@ static int hl7132_gbms_mains_get_property(struct power_supply *psy,
 		val->int64val = chg_state.v;
 		break;
 
+	case GBMS_PROP_CURRENT_NOW:
+		/* return the input current - uA unit */
+		ret = hl7132_get_iin_original(hl7132, &val->prop.intval);
+		if (ret < 0)
+			dev_err(hl7132->dev, "Invalid IIN ADC (%d)\n", ret);
+		break;
+
 	default:
 		dev_dbg(hl7132->dev,
 			"%s: route to hl7132_mains_get_property, psp:%d\n",
@@ -4378,9 +4398,9 @@ static int of_hl7132_dt(struct device *dev,
 #endif /* CONFIG_OF */
 
 #ifdef CONFIG_THERMAL
-static int hl7132_usb_tz_read_temp(struct thermal_zone_device *tz, int *temp)
+static int hl7132_usb_tz_read_temp(struct thermal_zone_device *tzd, int *temp)
 {
-	struct hl7132_charger *hl7132 = thermal_zone_device_priv(tz);
+	struct hl7132_charger *hl7132 = tzd->devdata;
 
 	if (!hl7132)
 		return -ENODEV;
@@ -4749,7 +4769,8 @@ static int hl7132_create_fs_entries(struct hl7132_charger *chip)
 }
 
 
-static int hl7132_probe(struct i2c_client *client)
+static int hl7132_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	static char *battery[] = { "hl7132-battery" };
 	struct power_supply_config mains_cfg = {};
@@ -4886,10 +4907,10 @@ static int hl7132_probe(struct i2c_client *client)
 #if IS_ENABLED(CONFIG_THERMAL)
 	if (pdata->usb_tz_name) {
 		hl7132_chg->usb_tzd =
-			thermal_tripless_zone_device_register(pdata->usb_tz_name,
-							      hl7132_chg,
-							      &hl7132_usb_tzd_ops,
-							      NULL);
+			thermal_zone_device_register(pdata->usb_tz_name, 0, 0,
+						     hl7132_chg,
+						     &hl7132_usb_tzd_ops,
+						     NULL, 0, 0);
 		if (IS_ERR(hl7132_chg->usb_tzd)) {
 			hl7132_chg->usb_tzd = NULL;
 			ret = PTR_ERR(hl7132_chg->usb_tzd);

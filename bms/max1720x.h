@@ -120,9 +120,13 @@ enum max1720x_register {
 	MAX1720X_LOCK = 0x7F,
 	MAX1720X_ODSCTH = 0xF2,
 	MAX1720X_ODSCCFG = 0xF3,
+	MAX1720X_VOLT_RAW = 0xF9,
 	MAX1720X_VFOCV = 0xFB,
 	MAX1720X_ALARM = 0xFD,
 	MAX1720X_VFSOC = 0xFF,
+
+	/* Debug registers for max17201 stuck issue */
+	MAX1720X_VCONVERT = 0xDB,
 };
 
 enum max1720x_status_bits {
@@ -237,6 +241,12 @@ enum max1720x_nvram {
 	MAX1720X_NVRAM_HISTORY_VALID_STATUS_START = 0xEB,
 	MAX1720X_NVRAM_REMAINING_UPDATES = 0xED,
 	MAX1720X_NVRAM_HISTORY_END = 0xEF,
+
+	/* Debug registers for max17201 stuck issue */
+	MAX1720X_FSTAT2 = 0x6E,
+	MAX1720X_NPACKCFG = 0xB5,
+	MAX1720X_HCONFIG2 = 0xF5,
+	MAX1720X_HCONFIG = 0xFD,
 };
 
 #define MAX1720X_HISTORY_PAGE_SIZE \
@@ -252,47 +262,18 @@ enum max1720x_nvram {
 
 /** ------------------------------------------------------------------------ */
 
-static bool max1720x_is_reg(struct device *dev, unsigned int reg)
-{
-	switch (reg) {
-	case MAX1720X_COMMAND:
-	case MAX1720X_COMMSTAT:
-	case MAX1720X_LOCK:
-	case MAX1720X_ODSCTH:
-	case MAX1720X_ODSCCFG:
-	case MAX1720X_VFOCV:
-	case MAX1720X_VFSOC:
-	case MAX1720X_ALARM:
-	case 0x00 ... 0x4F:
-	case 0xB0 ... 0xDF:
-		return true;
-	}
-
-	return false;
-}
-
 static const struct regmap_config max1720x_regmap_cfg = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
 	.max_register = MAX1720X_VFSOC,
-	.readable_reg = max1720x_is_reg,
-	.volatile_reg = max1720x_is_reg,
 };
-
-static bool max1720x_is_nvram_reg(struct device *dev, unsigned int reg)
-{
-	return (reg >= MAX1720X_NVRAM_START &&
-		reg <= MAX1720X_NVRAM_HISTORY_END);
-}
 
 const struct regmap_config max1720x_regmap_nvram_cfg = {
 	.reg_bits = 8,
 	.val_bits = 16,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
-	.max_register = MAX1720X_NVRAM_HISTORY_END,
-	.readable_reg = max1720x_is_nvram_reg,
-	.volatile_reg = max1720x_is_nvram_reg,
+	.max_register = 0xFF,
 };
 
 /** ------------------------------------------------------------------------ */
@@ -358,6 +339,11 @@ static const struct maxfg_reg max1720x[] = {
 					     700)},
 	[MAXFG_TAG_BRES] = { ATOM_INIT_SET(MAX1720X_NTTFCFG,
 					   MAX1720X_NUSER1D4) },
+
+	[MAXFG_TAG_fullsocthr] = { ATOM_INIT_REG16(MAX1720X_FULLSOCTHR)},
+	[MAXFG_TAG_misccfg] = { ATOM_INIT_REG16(MAX1720X_MISCCFG)},
+	[MAXFG_TAG_ichgterm] = { ATOM_INIT_REG16(MAX1720X_ICHGTERM)},
+	[MAXFG_TAG_timer] = { ATOM_INIT_REG16(MAX1720X_TIMER)},
 };
 
 

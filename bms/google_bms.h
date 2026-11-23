@@ -37,7 +37,42 @@ struct device_node;
 #define GBMS_CHG_TOPOFF_NB_LIMITS_MAX 10
 #define GBMS_AACR_DATA_MAX 10
 #define GBMS_AAFV_DATA_MAX 16
-#define GBMS_AACT_NB_LIMITS_MAX 10
+#define GBMS_AAFV_VOLTAGE_OFFSET_SCALE 1000
+#define GBMS_AACT_NB_LIMITS_MAX 5
+#define GBMS_AACT_PROFILE_MAX 100
+#define GBMS_AACC_TEMP_NB_MAX 10
+#define GBMS_AACC_SOC_SIZE 100
+#define GBMS_AACV_DATA_MAX 10
+
+struct aacc_weight_profile {
+	/* the profile of aacc_chg/aacc_dsg */
+	int temp_nb_limits;
+	s32 temp_limits[GBMS_AACC_TEMP_NB_MAX];
+	u32 *weight_limits;
+};
+
+struct aacc_profile {
+	struct aacc_weight_profile chg;	/* the data of the charging session */
+	struct aacc_weight_profile dsg;	/* the data of the discharging session */
+	int start_soc;			/* the start soc in each session */
+	int end_soc;			/* the end soc in each session */
+	int aawc;			/* wrights cycles */
+	u8 lotr;			/* determine the storage layout version */
+
+	/* to calculate the average temperature */
+	long long temp_sum;
+	ktime_t time_sum;
+	ktime_t last_update;
+};
+
+/* index 0 will correspond to soc 1%, and so on, index 99 will correspond to soc 100% */
+#define GBMS_CHG_WEIGHTS(profile, ti, soc) \
+	(((ti) >= 0 && (soc) >= 1) ? \
+	profile->aacc_cycles.chg.weight_limits[((ti) * GBMS_AACC_SOC_SIZE) + (soc - 1)] : 0)
+
+#define GBMS_DSG_WEIGHTS(profile, ti, soc) \
+	(((ti) >= 0 && (soc) >= 1) ? \
+	profile->aacc_cycles.dsg.weight_limits[((ti) * GBMS_AACC_SOC_SIZE) + (soc - 1)] : 0)
 
 struct gbms_chg_profile {
 	const char *owner_name;
@@ -52,6 +87,7 @@ struct gbms_chg_profile {
 	u32 *cccm_limits;
 	/* used to fill table  */
 	u32 capacity_ma;
+	u32 last_volt;
 
 	/* behavior */
 	u32 fv_uv_margin_dpct;
@@ -80,13 +116,61 @@ struct gbms_chg_profile {
 	u32 aafv_offset;
 
 	/* AACT feature */
+	int aact_temp_nb_limits;
+	s32 aact_temp_limits[GBMS_CHG_TEMP_NB_LIMITS_MAX];
+	int aact_volt_nb_limits;
+	s32 aact_volt_limits[GBMS_CHG_VOLT_NB_LIMITS_MAX];
 	int aact_nb_limits;
 	s32 aact_limits[GBMS_AACT_NB_LIMITS_MAX];
 	int aact_idx;
 	bool aact_init_profile;
+	bool aact_update_profile;
+	bool aact_support_multiple_profiles;
+	bool aact_load_chg_ecc;
+	u32 *aact_cccm_limits;
+
+	/* AACC feature */
+	struct aacc_profile aacc_cycles;
+
+	/* AACV feature */
+	u32 aacv_cycles[GBMS_AACV_DATA_MAX];
+	u32 aacv_offsets[GBMS_AACV_DATA_MAX];
+	u32 aacv_nb_limits;
+	u32 aacv_offset;
 
 	bool debug_chg_profile;
 	bool enable_switch_chg_profile;
+};
+
+typedef struct {
+    char *temp_limits[GBMS_AACT_NB_LIMITS_MAX];
+    char *cv_limits[GBMS_AACT_NB_LIMITS_MAX];
+    char *cc_limits[GBMS_AACT_NB_LIMITS_MAX];
+} aact_limits_profiles_t;
+
+/* the number should be the same as GBMS_AACT_NB_LIMITS_MAX */
+static aact_limits_profiles_t aact_all_limits = {
+    .temp_limits = {
+        "google,aact-temp-limits",
+        "google,aact-temp-limits-1",
+        "google,aact-temp-limits-2",
+        "google,aact-temp-limits-3",
+        "google,aact-temp-limits-4"
+    },
+    .cv_limits = {
+        "google,aact-cv-limits",
+        "google,aact-cv-limits-1",
+        "google,aact-cv-limits-2",
+        "google,aact-cv-limits-3",
+        "google,aact-cv-limits-4"
+    },
+    .cc_limits = {
+        "google,aact-cc-limits",
+        "google,aact-cc-limits-1",
+        "google,aact-cc-limits-2",
+        "google,aact-cc-limits-3",
+        "google,aact-cc-limits-4"
+    }
 };
 
 #define WLC_BPP_THRESHOLD_UV	7000000
@@ -132,6 +216,7 @@ struct gbms_chg_profile {
 #define BATTERY_DEBUG_ATTRIBUTE(name, fn_read, fn_write) \
 static const struct file_operations name = {	\
 	.open	= simple_open,			\
+	.llseek	= no_llseek,			\
 	.read	= fn_read,			\
 	.write	= fn_write,			\
 }
@@ -265,6 +350,7 @@ struct batt_ttf_stats {
 	struct mutex ttf_lock;
 
 	int report_max_ratio; /* max ratio to report ttf */
+	int fcc_now;
 };
 
 /*
@@ -340,9 +426,10 @@ enum gbms_stats_tier_idx_t {
 	GBMS_STATS_BASE_BATT = 90,
 	GBMS_STATS_SEC_BATT = 91,
 
-	/* TODO: rename, these are not really related to AC */
-	GBMS_STATS_AC_TI_FULL_CHARGE = 100,
-	GBMS_STATS_AC_TI_HIGH_SOC = 101,
+	GBMS_STATS_TI_FULL_CHARGE = 100,
+	GBMS_STATS_TI_HIGH_SOC = 101,
+	GBMS_STATS_TI_EOC = 102,
+	GBMS_STATS_TI_FULL_RECHARGE = 103,
 
 	/* Defender TEMP or DWELL */
 	GBMS_STATS_BD_TI_OVERHEAT_TEMP = 110,
@@ -351,10 +438,30 @@ enum gbms_stats_tier_idx_t {
 	GBMS_STATS_BD_TI_DOCK = 113,
 	GBMS_STATS_BD_TI_TEMP_PRETRIGGER = 114,
 	GBMS_STATS_BD_TI_TEMP_RESUME = 115,
+	GBMS_STATS_BD_TI_POLICY_LONGLIFE = 116,
+	GBMS_STATS_BD_TI_POLICY_FORCE_TO_FULL = 117,
+	GBMS_STATS_BD_TI_TEMP_RECHARGE = 118,
+	GBMS_STATS_BD_TI_POLICY_LONGLIFE_RECHARGE = 119,
 
 	GBMS_STATS_BD_TI_TRICKLE_CLEARED = 122,
 	GBMS_STATS_BD_TI_DOCK_CLEARED = 123,
 	GBMS_STATS_TEMP_FILTER = 124,
+	GBMS_STATS_BD_TI_DWELL_V1P5_STAGE1 = 125,
+	GBMS_STATS_BD_TI_DWELL_V1P5_STAGE2 = 126,
+};
+
+/* Definition should be synced to HLOS BatteryDefender.h */
+enum dwell_defend_state {
+	STATE_INIT,
+	STATE_DISABLED,
+	STATE_DISCONNECTED,
+	STATE_CONNECTED,
+	STATE_ACTIVE_HOLD,
+	STATE_ACTIVE_1,
+	STATE_ACTIVE_2,
+	STATE_ACTIVE_3,
+	STATE_ACTIVE_NOSPOOF,
+	STATE_COUNT,
 };
 
 /* health state */
@@ -388,6 +495,8 @@ struct batt_chg_health {
 #define CHG_HEALTH_REST_SOC(rest) (((rest)->always_on_soc != -1) ? \
 			(rest)->always_on_soc : (rest)->rest_soc)
 
+#define RECHG_STATS_SIZE 10
+
 /* reset on every charge session */
 struct gbms_charging_event {
 	union gbms_ce_adapter_details	adapter_details;
@@ -408,6 +517,16 @@ struct gbms_charging_event {
 	uint16_t csi_aggregate_status;
 	uint16_t csi_aggregate_type;
 
+	int aacp_version;
+	int aafv;
+	int aacc;
+	int aacc_chg_cc;
+	int max_charge_voltage;
+
+	int bpst_sbd_status;
+	int bpst_count;
+	int bpst_chg_rate;
+
 	/* health based charging */
 	struct batt_chg_health		ce_health;	/* updated on close */
 	struct gbms_ce_tier_stats	health_stats;	/* updated in HC */
@@ -423,6 +542,12 @@ struct gbms_charging_event {
 	struct gbms_ce_tier_stats cc_lvl_stats;
 	struct gbms_ce_tier_stats trickle_stats;
 	struct gbms_ce_tier_stats temp_filter_stats;
+	struct gbms_ce_tier_stats dwell_stage1_stats;
+	struct gbms_ce_tier_stats dwell_stage2_stats;
+	struct gbms_ce_tier_stats policy_longlife_stats;
+	struct gbms_ce_tier_stats policy_force_full_stats;
+	struct gbms_ce_tier_stats eoc_charge_stats;
+	struct gbms_ce_tier_stats full_recharge_stats[RECHG_STATS_SIZE];
 };
 
 #define GBMS_CCCM_LIMITS_SET(profile, ti, vi) \
@@ -431,12 +556,22 @@ struct gbms_charging_event {
 #define GBMS_CCCM_LIMITS_GET(profile, ti, vi) \
 	(((ti) >= 0 && (vi) >= 0) ? profile->cccm_limits[((ti) * profile->volt_nb_limits) + (vi)] : 0)
 
-#define GBMS_AACT_IDX(profile) \
-	(profile->aact_idx * (profile->temp_nb_limits - 1))
+/* only one table in each profile if multiple_profiles is supported */
+#define GBMS_AACT_TI(profile) \
+	(profile->aact_support_multiple_profiles ? \
+	0 : profile->aact_idx * (profile->temp_nb_limits - 1))
 
 #define GBMS_CCCM_LIMITS(profile, ti, vi) \
 	(((ti) >= 0 && (vi) >= 0) ? \
-	profile->cccm_limits[((ti + GBMS_AACT_IDX(profile)) * profile->volt_nb_limits) + (vi)] : 0)
+	profile->cccm_limits[((ti + GBMS_AACT_TI(profile)) * profile->volt_nb_limits) + (vi)] : 0)
+
+/* select the preset (first) profile if multiple_profiles is not supported */
+#define GBMS_AACT_IDX(profile) \
+	(profile->aact_support_multiple_profiles ? profile->aact_idx : 0)
+
+/* only one table in each profile if multiple_profiles is supported */
+#define GBMS_AACT_NB_LIMITS(profile) \
+	(profile->aact_support_multiple_profiles ? 1 : profile->aact_nb_limits)
 
 /* newgen charging */
 #define GBMS_CS_FLAG_BUCK_EN		BIT(0)
@@ -469,10 +604,12 @@ int gbms_init_aact_profile_internal(struct gbms_chg_profile *profile,
 			  struct device_node *node, const char *owner_name);
 #define gbms_init_aact_profile(p, n) \
 	gbms_init_aact_profile_internal(p, n, KBUILD_MODNAME)
+int gbms_update_chg_profile_from_aact(struct gbms_chg_profile *profile);
 int gbms_aact_get_index(const struct gbms_chg_profile *profile, const int cycles);
+int gbms_read_chg_aact_ecc(struct gbms_chg_profile *profile, struct device_node *node);
 
 void gbms_init_chg_table(struct gbms_chg_profile *profile,
-			 const struct device_node *node, u32 capacity);
+			 struct device_node *node, u32 capacity);
 
 void gbms_free_chg_profile(struct gbms_chg_profile *profile);
 
@@ -538,7 +675,9 @@ const char *gbms_chg_ev_adapter_s(int adapter);
 #define REASON_DC_DRV		"DC_DRV"
 #define REASON_MDIS		"MDIS"
 #define REASON_THERM		"THERMAL_DAEMON_VOTER"
-
+#define MSC_PWR_VOTER		"msc_pwr_disable"
+#define DEFENDER_ENABLED_VOTER "DEFENDER_ENABLED_VOTER"
+#define WLC_DEFENDER_VOTABLE "WLC_DEFENDER"
 #define VOTABLE_FORCE_5V	"FORCE_5V"
 
 #define HDA_TZ_NONE		(0)
@@ -581,33 +720,26 @@ int ttf_soc_cstr(char *buff, int size, const struct ttf_soc_stats *soc_stats,
 
 int ttf_soc_estimate(ktime_t *res, struct batt_ttf_stats *stats,
 		     const struct gbms_charging_event *ce_data,
-		     qnum_t soc, qnum_t last);
+		     qnum_t soc, qnum_t last, int tier_idx);
 
 void ttf_soc_init(struct ttf_soc_stats *dst);
 
 int ttf_tier_cstr(char *buff, int size, const struct ttf_tier_stat *t_stat);
 
-int ttf_tier_estimate(ktime_t *res,
-		      const struct batt_ttf_stats *ttf_stats,
-		      int temp_idx, int vbatt_idx,
-		      int capacity, int full_capacity);
+int ttf_tier_estimate(ktime_t *res, const struct batt_ttf_stats *ttf_stats,
+		      int temp_idx, int vbatt_idx, int capacity, int full_capacity);
 
-int ttf_stats_init(struct batt_ttf_stats *stats,
-		   struct device *device,
-		   int capacity_ma);
+int ttf_stats_init(struct batt_ttf_stats *stats, struct device_node *node, int capacity_ma);
 
 void ttf_stats_update(struct batt_ttf_stats *stats,
 	 	      struct gbms_charging_event *ce_data,
 		      bool force);
 
-int ttf_stats_cstr(char *buff, int size, const struct batt_ttf_stats *stats,
-		   bool verbose);
+int ttf_stats_cstr(char *buff, int size, const struct batt_ttf_stats *stats, bool verbose);
 
-int ttf_stats_sscan(struct batt_ttf_stats *stats,
-		    const char *buff, size_t size);
+int ttf_stats_sscan(struct batt_ttf_stats *stats, const char *buff, size_t size);
 
-struct batt_ttf_stats *ttf_stats_dup(struct batt_ttf_stats *dst,
-				     const struct batt_ttf_stats *src);
+struct batt_ttf_stats *ttf_stats_dup(struct batt_ttf_stats *dst, const struct batt_ttf_stats *src);
 
 __printf(2, 3)
 void ttf_log(const struct batt_ttf_stats *stats, const char *fmt, ...);
@@ -615,8 +747,6 @@ void ttf_log(const struct batt_ttf_stats *stats, const char *fmt, ...);
 ssize_t ttf_dump_details(char *buf, int max_size,
 			 const struct batt_ttf_stats *ttf_stats,
 			 int last_soc);
-
-int ttf_pwr_vtier_idx(const struct batt_ttf_stats *stats, int soc);
 
 int ttf_ref_cc(const struct batt_ttf_stats *stats, int soc);
 
@@ -628,13 +758,22 @@ int ttf_soc_cstr_combine(char *buff, int size, const struct ttf_soc_stats *soc_r
 			 const struct ttf_soc_stats *soc_stats);
 
 int gbms_read_aacr_limits(struct gbms_chg_profile *profile,
-			  const struct device_node *node);
+			  struct device_node *node);
 
 int gbms_read_aafv_limits(struct gbms_chg_profile *profile,
 			  struct device_node *node);
 int gbms_aafv_get_offset(const struct gbms_chg_profile *profile, const int cycles);
 bool gbms_aafv_offset_is_valid(const struct gbms_chg_profile *profile,
 			       const u32 offset, const u32 len);
+int gbms_aafv_get_last_entry(const struct gbms_chg_profile *profile);
+int gbms_read_aacc_chg_weights(struct gbms_chg_profile *profile,
+			       struct device_node *node);
+int gbms_read_aacc_dsg_weights(struct gbms_chg_profile *profile,
+			       struct device_node *node);
+int gbms_aacc_temp_idx(const struct gbms_chg_profile *profile, int temp, bool is_charge);
+int gbms_read_aacv_limits(struct gbms_chg_profile *profile,
+			  struct device_node *node);
+int gbms_aacv_get_offset(const struct gbms_chg_profile *profile, const int cycles);
 
 bool chg_state_is_disconnected(const union gbms_charger_state *chg_state);
 
@@ -654,9 +793,18 @@ int gbms_tier_stats_cstr(char *buff, int size,
 			 bool verbose);
 
 void gbms_log_cstr_handler(struct logbuffer *log, char *buf, int len);
+/* decode EEPROM serial number to readable string */
+int gbms_decode_eeprom_sn(char *decode_sn, const size_t max_len);
 
+#define FADE_RATE_OFFSET	0
+#define FADE_RATE_FCR_OFFSET	8
+#define FADE_RATE_SEC_OFFSET	16
+#define FADE_RATE_MIX_OFFSET	24
 
-
+#define get_fade_rate(fr)	((s8)((fr) >> FADE_RATE_OFFSET & 0xFF))
+#define get_fade_rate_fcr(fr)	((s8)((fr) >> FADE_RATE_FCR_OFFSET & 0xFF))
+#define get_fade_rate_sec(fr)	((s8)((fr) >> FADE_RATE_SEC_OFFSET & 0xFF))
+#define get_fade_rate_mix(fr)	((s8)((fr) >> FADE_RATE_MIX_OFFSET & 0xFF))
 
 /*
  * Charger modes
@@ -670,6 +818,7 @@ enum gbms_charger_modes {
 	GBMS_USB_OTG_ON 	= 0x31,
 	GBMS_USB_OTG_FRS_ON	= 0x32,
 
+	GBMS_CHGR_MODE_WLC_RX	= 0x39,
 	GBMS_CHGR_MODE_WLC_TX	= 0x40,
 
 	GBMS_POGO_VIN		= 0x50,
@@ -700,6 +849,9 @@ enum bhi_algo {
 	BHI_ALGO_INDI		=  8, /* age criteria for Battery Service Test API b/253642456 */
 	BHI_ALGO_DTOOL		=  9, /* diagnostics for Cavalry b/304878620 */
 	BHI_ALGO_ACHI_FCR	= 10, /* average of FCR from history b/310501655*/
+	BHI_ALGO_ACHI_CARETAKER	= 11, /* same as ACHI_B + caretaker */
+	BHI_ALGO_ACHI_SEC	= 12, /* same as ACHI_B report from secondary battery */
+	BHI_ALGO_ACHI_MIX	= 13, /* same as ACHI_B mix the capacity from both batteries */
 	BHI_ALGO_MAX,
 };
 
@@ -807,7 +959,7 @@ enum charging_state {
 };
 
 #define LONGLIFE_CHARGE_STOP_LEVEL 80
-#define LONGLIFE_CHARGE_START_LEVEL 79
+#define LONGLIFE_CHARGE_START_LEVEL 77
 #define ADAPTIVE_ALWAYS_ON_SOC 80
 
 enum charging_policy {
@@ -838,6 +990,7 @@ enum charging_policy_vote {
 #define DEBUG_ATTRIBUTE_WO(name) \
 static const struct file_operations name ## _fops = {	\
 	.open	= simple_open,			\
+	.llseek	= no_llseek,			\
 	.write	= name ## _store,			\
 }
 
@@ -862,5 +1015,86 @@ static inline int tcpm_update_sink_capabilities(struct tcpm_port *port,
 #define GBMS_TP_UPPER_BOUND   'U'
 #define GBMS_TP_LOWER_TRIGGER 'F'
 #define GBMS_TP_UPPER_TRIGGER 'C'
+
+
+enum monitor_log_tags {
+	MONITOR_TAG_AB = 0x4142, /* registers snapshot by abnormal event */
+	MONITOR_TAG_FU = 0x4655, /* result of firmware update */
+	MONITOR_TAG_HV = 0x4856, /* result of EEPROM history validation */
+	MONITOR_TAG_LH = 0x4C48, /* registers snapshot by learning event */
+	MONITOR_TAG_RM = 0x524D, /* registers snapshot by regular monitor */
+};
+
+/* BMS firmware update */
+enum gbms_fwupdate_msg_type {
+	FWU_MSG_TYPE_ERROR = -1,
+	FWU_MSG_TYPE_UNKNOWN = 0,
+	FWU_MSG_TYPE_UPDATE_START = 1,
+	FWU_MSG_TYPE_UPDATE_END = 2,
+	FWU_MSG_TYPE_DOWNLOAD_START = 3,
+	FWU_MSG_TYPE_DOWNLOAD_END = 4,
+};
+
+enum gbms_fwupdate_msg_category {
+	FWU_MSG_CATEGORY_UNKNOWN = 0,
+	FWU_MSG_CATEGORY_RX = 1,
+	FWU_MSG_CATEGORY_TX = 2,
+	FWU_MSG_CATEGORY_MCU = 3,
+	FWU_MSG_CATEGORY_MAX77779 = 4,
+};
+
+enum gbms_fwupdate_max77779_err_code {
+	FWU_MAX77779_ERR_POST_STATUS_CHECK = -3,
+	FWU_MAX77779_ERR_DATA_TRANSFER = -2,
+	FWU_MAX77779_ERR_PREPARE = -1,
+	FWU_MAX77779_ERR_UNKNOWN = 0,
+	FWU_MAX77779_ERR_NONE = 1,
+};
+
+enum bd_trickle_ver {
+	BD_TRICKLE_VER_NONE = 0,
+	BD_TRICKLE_VER_SOC = 1,
+	BD_TRICKLE_VER_FCC = 2,
+	BD_TRICKLE_VER_MAX,
+};
+
+/* Define charger status for stability dump */
+#define CDD_PD_VOLTAGE_UV			9000000
+
+#define CDD_CHARGE_OFF_MODE_CHARGING		BIT(0)
+#define CDD_CHARGE_DISCHARGING			BIT(1)
+#define CDD_CHARGE_CHARGING			BIT(2)
+#define CDD_CHARGE_FAST_CHARGING		BIT(3)
+#define CDD_CHARGE_WLC_CHARGING			BIT(4)
+#define CDD_CHARGE_EXT_CHARGING			BIT(5)
+#define CDD_CHARGE_INIT_DONE			BIT(7)
+
+enum fg_log_event {
+	FG_LOG_RELAX = 0,
+	FG_LOG_DEBUG,
+	FG_LOG_CHG_DONE,
+	FG_LOG_REACHING_100,
+	FG_LOG_FALL_BELOW_10,
+};
+
+enum spoof_soc_reason {
+	SPOOF_SOC_NONE = 0,
+	SPOOF_SOC_CHARGING_POLICY,
+	SPOOF_SOC_ADAPTIVE_CHARGING,
+	SPOOF_SOC_TEMP_DEFEND,
+	SPOOF_SOC_DWELL_DEFEND,
+};
+
+enum bpst_batt_status {
+	BPST_BATT_UNKNOWN = 0,
+	BPST_BATT_CONNECT = 1,
+	BPST_BATT_DISCONNECT = 2,
+	BPST_BATT_CELL_FAULT = 3,
+	BPST_BATT_BASE_DC = 4,
+	BPST_BATT_SEC_DC = 5,
+	BPST_BATT_ALL_DC_ON_BOOT = 6,
+	BPST_BATT_BASE_DC_ON_BOOT = 7,
+	BPST_BATT_SEC_DC_ON_BOOT = 8,
+};
 
 #endif  /* __GOOGLE_BMS_H_ */

@@ -123,12 +123,16 @@ static inline void gvotable_lock_election(struct gvotable_election *el)
 }
 #endif
 
-#define gvotable_unlock_callback(el) mutex_unlock(&(el)->cb_lock)
+static inline void gvotable_unlock_callback(struct gvotable_election *el)
+{
+	el->owner = NULL;
+	mutex_unlock(&(el)->cb_lock);
+}
 
 static inline void gvotable_unlock_election(struct gvotable_election *el)
 {
 	mutex_unlock(&(el)->re_lock);
-	mutex_unlock(&(el)->cb_lock);
+	gvotable_unlock_callback(el);
 }
 
 struct election_slot {
@@ -137,7 +141,7 @@ struct election_slot {
 	struct dentry *de;
 };
 
-static int gvotable_comparator_uint(void *l, void *r)
+int gvotable_comparator_uint_max(void *l, void *r)
 {
 	unsigned int a = *((unsigned int *)&l);
 	unsigned int b = *((unsigned int *)&r);
@@ -149,6 +153,7 @@ static int gvotable_comparator_uint(void *l, void *r)
 	else
 		return 0;
 }
+EXPORT_SYMBOL_GPL(gvotable_comparator_uint_max);
 
 static int gvotable_comparator_int(void *l, void *r)
 {
@@ -177,17 +182,10 @@ int gvotable_comparator_int_min(void *a, void *b)
 }
 EXPORT_SYMBOL_GPL(gvotable_comparator_int_min);
 
-/* compares l and r as unsigned integers */
-int gvotable_comparator_uint_max(void *a, void *b)
-{
-	return -gvotable_comparator_uint(a, b);
-}
-EXPORT_SYMBOL_GPL(gvotable_comparator_uint_max);
-
-/* compares l and r as unsigned integers */
+/* compares l and r as integers */
 int gvotable_comparator_uint_min(void *a, void *b)
 {
-	return gvotable_comparator_uint(a, b);
+	return -gvotable_comparator_uint_max(a, b);
 }
 EXPORT_SYMBOL_GPL(gvotable_comparator_uint_min);
 
@@ -247,7 +245,7 @@ static u32 gvotable_internal_hash(const char *str)
 static void gvotable_internal_update_reason(struct gvotable_election *el,
 					    const char *new_reason)
 {
-	strscpy(el->reason, new_reason, sizeof(el->reason));
+	strlcpy(el->reason, new_reason, GVOTABLE_MAX_REASON_LEN);
 }
 
 static void gvotable_internal_copy_result(struct gvotable_election *el,
@@ -533,7 +531,7 @@ gvotable_create_election(const char *name, int vote_size,
 	if (name) {
 		slot->el->has_name = true;
 		slot->el->hash     = gvotable_internal_hash(name);
-		strscpy(slot->el->name, name, sizeof(slot->el->name));
+		strlcpy(slot->el->name, name, MAX_NAME_LEN);
 
 		gvotable_debugfs_create_el(slot);
 	}
@@ -695,7 +693,7 @@ int gvotable_election_set_name(struct gvotable_election *el, const char *name)
 
 	el->has_name = true;
 	el->hash = gvotable_internal_hash(name);
-	strscpy(el->name, name, sizeof(el->name));
+	strlcpy(el->name, name, MAX_NAME_LEN);
 
 	/* el->has_name ==> find internal will now find the election */
 	slot = gvotable_find_internal(name);
@@ -875,7 +873,7 @@ static int gvotable_get_current_reason_unlocked(struct gvotable_election *el,
 	else if (el->result_is_valid)
 		r = el->reason;
 
-	return r ? strscpy(reason, r, max_len) : -EAGAIN;
+	return r ? strlcpy(reason, r, max_len) : -EAGAIN;
 }
 
 /* Retrieve current reason for election result. */
@@ -1132,7 +1130,7 @@ int gvotable_cast_vote(struct gvotable_election *el, const char *reason,
 		}
 
 		ballot->reason_hash = gvotable_internal_hash(reason);
-		strscpy(ballot->reason, reason, sizeof(ballot->reason));
+		strlcpy(ballot->reason, reason, GVOTABLE_MAX_REASON_LEN);
 		if (el->use_alloc)
 			ballot->vote_size = el->vote_size;
 		el->num_voters++;
@@ -1174,6 +1172,7 @@ EXPORT_SYMBOL_GPL(gvotable_cast_vote);
 #define GVOTABLE_DEBUG_ATTRIBUTE(name, fn_read, fn_write) \
 static const struct file_operations name = {	\
 	.open	= simple_open,			\
+	.llseek	= no_llseek,			\
 	.read	= fn_read,			\
 	.write	= fn_write,			\
 }

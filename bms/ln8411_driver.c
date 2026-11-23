@@ -31,7 +31,7 @@
 #define LN8411_VBATMIN_CHECK_T	1000	/* 1000ms */
 #define LN8411_CCMODE_CHECK1_T	5000	/* 10000ms -> 500ms */
 #define LN8411_CCMODE_CHECK2_T	5000	/* 5000ms */
-#define LN8411_CVMODE_CHECK_T 	10000	/* 10000ms */
+#define LN8411_CVMODE_CHECK_T	2000	/* 2000ms */
 #define LN8411_ENABLE_DELAY_T	250	/* 250ms */
 #define LN8411_CVMODE_CHECK2_T	1000	/* 1000ms */
 #define LN8411_ENABLE_WLC_DELAY_T	300	/* 300ms */
@@ -1073,7 +1073,7 @@ static int ln8411_check_error(struct ln8411_charger *ln8411)
 	return ret;
 }
 
-static int ln8411_get_iin(struct ln8411_charger *ln8411, int *iin)
+static int ln8411_get_iin_original(struct ln8411_charger *ln8411, int *iin)
 {
 	const int offset = 0;
 	int temp;
@@ -1085,8 +1085,21 @@ static int ln8411_get_iin(struct ln8411_charger *ln8411, int *iin)
 	if (temp < offset)
 		temp = offset;
 
-	*iin = conv_chg_mode(ln8411, temp - offset);
+	*iin = temp - offset;
 	return 0;
+}
+
+static int ln8411_get_iin(struct ln8411_charger *ln8411, int *iin)
+{
+    int ret;
+    int temp;
+
+    ret = ln8411_get_iin_original(ln8411, &temp);
+    if (ret < 0)
+        return ret;
+
+    *iin = conv_chg_mode(ln8411, temp);
+    return 0;
 }
 
 /* only needed for logging */
@@ -1165,6 +1178,7 @@ static int ln8411_read_status(struct ln8411_charger *ln8411)
 {
 	int ret = 0;
 	unsigned int reg_val;
+	int vbat;
 
 	ret = regmap_read(ln8411->regmap, LN8411_FAULT3_STS, &reg_val);
 	if (ret < 0) {
@@ -1182,12 +1196,16 @@ static int ln8411_read_status(struct ln8411_charger *ln8411)
 	}
 	*/
 
+	ret = ln8411_get_batt_info(ln8411, BATT_VOLTAGE, &vbat);
+	if (ret)
+		return ret;
+
 	if (ln8411_read_adc(ln8411, ADCCH_IIN) >= ln8411->iin_reg)
 		ret = STS_MODE_IIN_LOOP;
-	else if (ln8411_read_adc(ln8411, ADCCH_VBAT) >= ln8411->vfloat_reg)
+	else if (vbat >= ln8411->vfloat_reg)
 		ret = STS_MODE_VFLT_LOOP;
 	else
-		ret = STS_MODE_LOOP_INACTIVE;;
+		ret = STS_MODE_LOOP_INACTIVE;
 
 	return ret;
 }
@@ -3958,6 +3976,9 @@ skip_pps:
 		ln8411->timer_period = LN8411_TA_CONFIG_WAIT_T;
 	else if (ln8411->ta_type == TA_TYPE_WIRELESS)
 		ln8411->timer_period = LN8411_PDMSG_WLC_WAIT_T;
+	else if ((ln8411->charging_state == DC_STATE_CV_MODE) ||
+		 (ln8411->charging_state == DC_STATE_START_CV))
+		ln8411->timer_period = LN8411_CVMODE_CHECK_T;
 	else
 		ln8411->timer_period = LN8411_PDMSG_WAIT_T;
 
@@ -4752,7 +4773,7 @@ error:
 #if IS_ENABLED(CONFIG_GPIOLIB)
 static int ln8411_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 {
-	return GPIO_LINE_DIRECTION_OUT;
+	return GPIOF_DIR_OUT;
 }
 
 static int ln8411_gpio_get(struct gpio_chip *chip, unsigned int offset)
@@ -4783,7 +4804,7 @@ static int ln8411_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return ret;
 }
 
-static int ln8411_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void ln8411_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct ln8411_charger *ln8411 = gpiochip_get_data(chip);
 	int ret = 0;
@@ -4809,8 +4830,6 @@ static int ln8411_gpio_set(struct gpio_chip *chip, unsigned int offset, int valu
 
 	if (ret < 0)
 		dev_err(&ln8411->client->dev, "GPIO%d: value=%d ret:%d\n", offset, value, ret);
-
-	return ret;
 }
 
 static void ln8411_gpio_init(struct ln8411_charger *ln8411)
@@ -5106,6 +5125,15 @@ static int ln8411_gbms_mains_get_property(struct power_supply *psy,
 		val->int64val = chg_state.v;
 		break;
 
+	case GBMS_PROP_CURRENT_NOW:
+		/* return the input current - uA unit */
+		mutex_lock(&ln8411->lock);
+		ret = ln8411_get_iin_original(ln8411, &val->prop.intval);
+		if (ret < 0)
+			dev_err(ln8411->dev, "Invalid IIN ADC (%d)\n", ret);
+		mutex_unlock(&ln8411->lock);
+		break;
+
 	default:
 		pr_debug("%s: route to ln8411_mains_get_property, psp:%d\n", __func__, prop);
 		return -ENODATA;
@@ -5234,9 +5262,9 @@ static int of_ln8411_dt(struct device *dev,
 #endif /* CONFIG_OF */
 
 #if IS_ENABLED(CONFIG_THERMAL)
-static int ln8411_usb_tz_read_temp(struct thermal_zone_device *tz, int *temp)
+static int ln8411_usb_tz_read_temp(struct thermal_zone_device *tzd, int *temp)
 {
-	struct ln8411_charger *ln8411 = thermal_zone_device_priv(tz);
+	struct ln8411_charger *ln8411 = tzd->devdata;
 
 	if (!ln8411)
 		return -ENODEV;
@@ -5467,7 +5495,8 @@ static int ln8411_create_fs_entries(struct ln8411_charger *chip)
 }
 
 
-static int ln8411_probe(struct i2c_client *client)
+static int ln8411_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	static char *battery[] = { "ln8411-battery" };
 	struct power_supply_config mains_cfg = {};
@@ -5475,7 +5504,6 @@ static int ln8411_probe(struct i2c_client *client)
 	struct ln8411_charger *ln8411_charger;
 	struct device *dev = &client->dev;
 	const char *psy_name = NULL;
-	struct device_node __maybe_unused *dn;
 	int ret;
 
 	dev_dbg(dev, "%s: =========START=========\n", __func__);
@@ -5595,13 +5623,10 @@ static int ln8411_probe(struct i2c_client *client)
 #if IS_ENABLED(CONFIG_GPIOLIB)
 	ln8411_gpio_init(ln8411_charger);
 	ln8411_charger->gpio.parent = &client->dev;
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(client->dev.of_node);
-	dn = of_find_node_by_name(client->dev.of_node,
-				  ln8411_charger->gpio.label);
-	if (!dn)
+	ln8411_charger->gpio.of_node = of_find_node_by_name(client->dev.of_node,
+							    ln8411_charger->gpio.label);
+	if (!ln8411_charger->gpio.of_node)
 		dev_err(&client->dev, "Failed to find %s DT node\n", ln8411_charger->gpio.label);
-	ln8411_charger->gpio.fwnode = of_node_to_fwnode(dn);
 
 	ret = devm_gpiochip_add_data(&client->dev, &ln8411_charger->gpio, ln8411_charger);
 	dev_info(&client->dev, "%d GPIOs registered ret: %d\n", ln8411_charger->gpio.ngpio, ret);
@@ -5610,10 +5635,10 @@ static int ln8411_probe(struct i2c_client *client)
 #if IS_ENABLED(CONFIG_THERMAL)
 	if (pdata->usb_tz_name) {
 		ln8411_charger->usb_tzd =
-		    thermal_tripless_zone_device_register(pdata->usb_tz_name,
-							  ln8411_charger,
-							  &ln8411_usb_tzd_ops,
-							  NULL);
+			thermal_zone_device_register(pdata->usb_tz_name, 0, 0,
+						     ln8411_charger,
+						     &ln8411_usb_tzd_ops,
+						     NULL, 0, 0);
 		if (IS_ERR(ln8411_charger->usb_tzd)) {
 			ln8411_charger->usb_tzd = NULL;
 			ret = PTR_ERR(ln8411_charger->usb_tzd);

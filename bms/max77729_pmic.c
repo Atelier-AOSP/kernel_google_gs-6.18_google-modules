@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright 2020,2023 Google, LLC
+ * Copyright 2020 Google, LLC
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -348,7 +348,7 @@ static irqreturn_t max777x9_pmic_irq(int irq, void *ptr)
 	}
 
 	/* just clear for max77729f */
-	pr_debug("irq=%d INTSRC:%x\n", irq, intsrc);
+	dev_info_ratelimited(data->dev, "irq=%d INTSRC:%x\n", irq, intsrc);
 	if (data->pmic_id != MAX77759_PMIC_PMIC_ID_MW)
 		return IRQ_HANDLED;
 
@@ -465,7 +465,6 @@ static int max77759_find_fg(struct max77729_pmic_data *data)
 		return -ENXIO;
 
 	data->fg_i2c_client = of_find_i2c_device_by_node(dn);
-	of_node_put(dn);
 	if (!data->fg_i2c_client)
 		return -EAGAIN;
 
@@ -891,13 +890,9 @@ static int max77759_gpio_get_direction(struct gpio_chip *chip,
 	}
 
 	if (offset == MAX77759_GPIO5_OFF)
-		return ((val & MAX77759_GPIO5_DIR_MASK)
-			? GPIO_LINE_DIRECTION_OUT
-			: GPIO_LINE_DIRECTION_IN);
+		return !(val & MAX77759_GPIO5_DIR_MASK);
 
-	return ((val & MAX77759_GPIO6_DIR_MASK)
-		? GPIO_LINE_DIRECTION_OUT
-		: GPIO_LINE_DIRECTION_IN);
+	return !(val & MAX77759_GPIO6_DIR_MASK);
 }
 
 /* offset is gpionum - 1 */
@@ -923,7 +918,7 @@ static int max77759_gpio_get(struct gpio_chip *chip, unsigned int offset)
 }
 
 /* offset is gpionum - 1 */
-static int max77759_gpio_set(struct gpio_chip *chip,
+static void max77759_gpio_set(struct gpio_chip *chip,
 			      unsigned int offset, int value)
 {
 	struct max77729_pmic_data *data = gpiochip_get_data(chip);
@@ -933,27 +928,27 @@ static int max77759_gpio_set(struct gpio_chip *chip,
 	uint8_t dir;
 
 	if ((offset < MAX77759_MIN_GPIO_OFF) || (offset > MAX77759_MAX_GPIO_OFF))
-		return -EINVAL;
+		return;
 
 	rc = maxq_gpio_control_read(data->maxq, &val);
 	if (rc < 0) {
 		dev_err(data->dev, "opcode read 0x23 failed\n");
-		return rc;
+		return;
 	}
 
 	if (offset == MAX77759_GPIO5_OFF) {
-		dir = val & MAX77759_GPIO5_DIR_MASK;
-		if (dir != MAX77759_GPIO5_DIR(MAX77759_GPIO_DIR_OUT))  {
+		dir = !(val & MAX77759_GPIO5_DIR_MASK);
+		if (dir != GPIOF_DIR_OUT)  {
 			dev_err(data->dev, "not output\n");
-			return -EINVAL;
+			return;
 		}
 		new_val = val & ~MAX77759_GPIO5_VAL_MASK;
 		new_val |= MAX77759_GPIO5_VAL(value);
 	} else {  /* MAX77759_GPIO6_OFF */
-		dir = val & MAX77759_GPIO6_DIR_MASK;
-		if (dir != MAX77759_GPIO6_DIR(MAX77759_GPIO_DIR_OUT))  {
+		dir = !(val & MAX77759_GPIO6_DIR_MASK);
+		if (dir != GPIOF_DIR_OUT)  {
 			dev_err(data->dev, "not output\n");
-			return -EINVAL;
+			return;
 		}
 		new_val = val & ~MAX77759_GPIO6_VAL_MASK;
 		new_val |= MAX77759_GPIO6_VAL(value);
@@ -963,11 +958,9 @@ static int max77759_gpio_set(struct gpio_chip *chip,
 		rc = maxq_gpio_control_write(data->maxq, new_val);
 		if (rc < 0) {
 			dev_err(data->dev, "opcode write 0x24 failed\n");
-			return rc;
+			return;
 		}
 	}
-
-	return rc;
 }
 
 /* offset is gpionum - 1 */
@@ -1081,10 +1074,10 @@ static int max77729_gpio_set_irq_type(struct irq_data *d, unsigned int type)
 	const int index = d->hwirq - MAX77759_GPIO5_OFF;
 
 	switch (type) {
-	case IRQ_TYPE_EDGE_FALLING:
+	case IRQF_TRIGGER_FALLING:
 		data->irq_trig_falling[index] = 1;
 		break;
-	case IRQ_TYPE_EDGE_RISING:
+	case IRQF_TRIGGER_RISING:
 		data->irq_trig_falling[index] = 0;
 		break;
 	default:
@@ -1214,12 +1207,12 @@ static struct irq_chip max77729_gpio_irq_chip = {
 /* ----------------------------------------------------------------------- */
 
 
-static int max77729_pmic_probe(struct i2c_client *client)
+static int max77729_pmic_probe(struct i2c_client *client,
+			       const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct max77729_pmic_data *data;
 	int irq_gpio, pmic_id, ret =0;
-	struct device_node *dn;
 
 	pmic_id = max77729_pmic_read_id(client);
 	if (pmic_id < 0)
@@ -1338,12 +1331,10 @@ static int max77729_pmic_probe(struct i2c_client *client)
 		data->gpio.ngpio = MAX77759_NUM_GPIOS;
 		data->gpio.can_sleep = true;
 		data->gpio.base	= -1;
-		/* balance of_node_put() in of_find_node_by_name() */
-		of_node_get(dev->of_node);
-		dn = of_find_node_by_name(dev->of_node, data->gpio.label);
-		if (!dn)
+		data->gpio.of_node = of_find_node_by_name(dev->of_node,
+							  data->gpio.label);
+		if (!data->gpio.of_node)
 			dev_err(dev, "Failed to find %s DT node\n", data->gpio.label);
-		data->gpio.fwnode = of_node_to_fwnode(dn);
 
 		/* check regmap-irq */
 		girq->chip = &max77729_gpio_irq_chip;

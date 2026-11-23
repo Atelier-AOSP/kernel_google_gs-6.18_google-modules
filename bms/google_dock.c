@@ -33,6 +33,7 @@
 #define DOCK_USER_VOTER			"DOCK_USER_VOTER"
 #define DOCK_AICL_VOTER			"DOCK_AICL_VOTER"
 #define DOCK_VOUT_VOTER			"DOCK_VOUT_VOTER"
+#define DOCK_VOTER			"DOCK_VOTER"
 
 #define DOCK_DELAY_INIT_MS		500
 #define DOCK_NOTIFIER_DELAY_MS		100
@@ -224,13 +225,17 @@ static void google_dock_vote_defaults(struct dock_drv *dock)
 	gvotable_cast_int_vote(dock->dc_icl_votable, DOCK_AICL_VOTER, 0, false);
 }
 
-static void google_dock_icl_ramp_alarm_cb(struct alarm *alarm, ktime_t now)
+static enum alarmtimer_restart google_dock_icl_ramp_alarm_cb(struct alarm
+							     *alarm,
+							     ktime_t now)
 {
 	struct dock_drv *dock = container_of(alarm, struct dock_drv,
 					     icl_ramp_alarm);
 
 	/* Alarm is in atomic context, schedule work to complete the task */
 	schedule_delayed_work(&dock->icl_ramp_work, msecs_to_jiffies(100));
+
+	return ALARMTIMER_NORESTART;
 }
 
 static void google_dock_icl_ramp_work(struct work_struct *work)
@@ -288,6 +293,12 @@ static void google_dock_notifier_check_dc(struct dock_drv *dock)
 		return;
 
 	dev_info(dock->device, "dc status is %d\n", dc_in);
+
+	if (google_dock_find_mode_votable(dock))
+		gvotable_cast_long_vote(dock->chg_mode_votable,
+					DOCK_VOTER,
+					GBMS_CHGR_MODE_WLC_RX,
+					dc_in);
 
 	if (dc_in) {
 		google_dock_set_icl(dock);
@@ -416,7 +427,7 @@ static int dock_get_property(struct power_supply *psy,
 	if (ret)
 		dev_dbg(dock->device, "Couldn't get prop %d, ret=%d\n", psp, ret);
 
-	return 0;
+	return ret;
 }
 
 static int dock_set_property(struct power_supply *psy,
@@ -619,7 +630,7 @@ static int google_dock_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dock);
 
 	psy_cfg.drv_data = dock;
-	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	psy_cfg.of_node = pdev->dev.of_node;
 
 	if (of_property_read_bool(pdev->dev.of_node, "google,psy-type-unknown"))
 		dock_psy_desc.type = POWER_SUPPLY_TYPE_UNKNOWN;
@@ -663,12 +674,12 @@ static int google_dock_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void google_dock_remove(struct platform_device *pdev)
+static int google_dock_remove(struct platform_device *pdev)
 {
 	struct dock_drv *dock = platform_get_drvdata(pdev);
 
 	if (!dock)
-		return;
+		return 0;
 
 	power_supply_unreg_notifier(&dock->nb);
 	cancel_delayed_work(&dock->init_work);
@@ -677,6 +688,8 @@ static void google_dock_remove(struct platform_device *pdev)
 	alarm_try_to_cancel(&dock->icl_ramp_alarm);
 	cancel_delayed_work(&dock->detect_work);
 	wakeup_source_unregister(dock->detect_ws);
+
+	return 0;
 }
 
 static void google_dock_shutdown(struct platform_device *pdev)

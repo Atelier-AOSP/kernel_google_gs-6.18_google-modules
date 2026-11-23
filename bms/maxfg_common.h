@@ -25,12 +25,19 @@
 #define DEFAULT_BATTERY_ID_RETRIES	20
 #define DUMMY_BATTERY_ID		170
 
-enum monitor_log_tags {
-	MONITOR_TAG_AB = 0x4142, /* registers snapshot by abnormal event */
-	MONITOR_TAG_HV = 0x4856, /* result of EEPROM history validation */
-	MONITOR_TAG_LH = 0x4C48, /* registers snapshot by learning event */
-	MONITOR_TAG_RM = 0x524D, /* registers snapshot by regular monitor */
-};
+#define BHI_CAP_FCN_COUNT		3
+#define BHI_CAP_FILTER_VALUE_COUNT	2
+
+#define DEFAULT_FORCE_FCR_UPDATE_CYCLE	10
+#define DEFAULT_FCN_FCR_DELTA_THESHOLD	10
+
+#define MAXFG_EVENT_FULLCAPNOM_LOW	BIT(0)
+#define MAXFG_EVENT_FULLCAPNOM_HIGH	BIT(1)
+#define MAXFG_EVENT_REPSOC_EDET		BIT(2)
+#define MAXFG_EVENT_REPSOC_FDET		BIT(3)
+#define MAXFG_EVENT_REPSOC		BIT(4)
+#define MAXFG_EVENT_VFOCV		BIT(5)
+#define MAXFG_EVENT_STUCK		BIT(6)
 
 enum maxfg_reg_tags {
 	MAXFG_TAG_avgc,
@@ -88,13 +95,63 @@ enum maxfg_reg_tags {
 	MAXFG_TAG_BCEA,
 	MAXFG_TAG_rset,
 	MAXFG_TAG_BRES,
+
+	MAXFG_TAG_fullsocthr,
+	MAXFG_TAG_misccfg,
+	MAXFG_TAG_ichgterm,
+	MAXFG_TAG_vempty,
+	MAXFG_TAG_sochold,
+	MAXFG_TAG_timer,
 };
+
+static const enum maxfg_reg_tags fg_event_regs[] = {
+	MAXFG_TAG_cycles,
+	MAXFG_TAG_vcel,
+	MAXFG_TAG_avgv,
+	MAXFG_TAG_curr,
+	MAXFG_TAG_avgc,
+	MAXFG_TAG_timer,
+	MAXFG_TAG_temp,
+	MAXFG_TAG_repcap,
+	MAXFG_TAG_mixcap,
+	MAXFG_TAG_fcrep,
+	MAXFG_TAG_fcnom,
+	MAXFG_TAG_qresd,
+	MAXFG_TAG_avcap,
+	MAXFG_TAG_vfremcap,
+	MAXFG_TAG_repsoc,
+	MAXFG_TAG_vfsoc,
+	MAXFG_TAG_msoc,
+	MAXFG_TAG_vfocv,
+	MAXFG_TAG_dpacc,
+	MAXFG_TAG_dqacc,
+	MAXFG_TAG_qh,
+	MAXFG_TAG_qh0,
+	MAXFG_TAG_vfsoc0,
+	MAXFG_TAG_qrtable20,
+	MAXFG_TAG_qrtable30,
+	MAXFG_TAG_status,
+	MAXFG_TAG_fstat,
+};
+
+static const enum maxfg_reg_tags fg_event_dbg_regs[] = {
+	MAXFG_TAG_rcomp0,
+	MAXFG_TAG_tempco,
+};
+
+#define FG_EVENT_REGS_COUNT (ARRAY_SIZE(fg_event_regs))
+#define FG_EVENT_DBG_REGS_COUNT (ARRAY_SIZE(fg_event_dbg_regs))
 
 enum max17x0x_reg_types {
 	GBMS_ATOM_TYPE_MAP = 0,
 	GBMS_ATOM_TYPE_REG = 1,
 	GBMS_ATOM_TYPE_ZONE = 2,
 	GBMS_ATOM_TYPE_SET = 3,
+};
+
+enum maxfg_bypass_chargelimit_mode {
+	MAXFG_BYPASS_MODE_CYCLE_DELTA = 1,
+	MAXFG_BYPASS_MODE_FCN_DELTA = 2,
 };
 
 #define MAX_HIST_FULLCAP	0x3FF
@@ -117,6 +174,25 @@ struct maxfg_eeprom_history {
 };
 #pragma pack()
 
+struct max1720x_eeprom_history {
+	u16 qrtable00;
+	u16 qrtable10;
+	u16 qrtable20;
+	u16 qrtable30;
+	u16 cycles;
+	u16 fullcapnom;
+	u16 rcomp0;
+	u16 tempco;
+	u16 iavgempty;
+	u16 fullcaprep;
+	u16 volttemp;
+	u16 maxmincurr;
+	u16 maxminvolt;
+	u16 maxmintemp;
+	u16 soc;
+	u16 timerh;
+};
+
 /* Capacity Estimation */
 struct gbatt_capacity_estimation {
 	const struct maxfg_reg *bcea;
@@ -131,6 +207,23 @@ struct gbatt_capacity_estimation {
 	int cap_filter_count;
 	int start_cc;
 	int start_vfsoc;
+};
+
+struct aafv_fg_config {
+	u32 voffset;
+	u32 fullsoc;
+	u32 fus;
+	u32 ichgterm;
+};
+
+struct maxfg_bypss_charglimt {
+	enum maxfg_bypass_chargelimit_mode mode;
+	int last_fullcharge;
+	int fcn_fcr_delta;
+	/* threshold value to trigger full charge, cycle based */
+	int threshold_cycle_delta;
+	/* threshold value to trigger force_fcr_update (10x scaled percentage) */
+	int threshold_fcn_delta;
 };
 
 #define ESTIMATE_DONE		2
@@ -229,6 +322,31 @@ static inline u8 s8_to_u4_boundary(s8 val)
 {
 	/* Convert s8 to u4 with boundary, range 0 to 15 */
 	return val < 0 ? 0 : val > 15 ? 15 : val;
+}
+
+static inline int reg_to_vempty(u16 val)
+{
+	return ((val >> 7) & 0x1FF) * 10;
+}
+
+static inline int reg_to_vrecovery(u16 val)
+{
+	return (val & 0x7F) * 40;
+}
+
+static inline int vempty_to_reg(int val)
+{
+	return (val / 10) << 7;
+}
+
+static inline int vrecovery_to_reg(int val)
+{
+	return val / 40;
+}
+
+static inline int reg_to_empty_volt_hold(u16 val)
+{
+	return ((val >> 5) & 0x7F) * 10;
 }
 
 #define NB_REGMAP_MAX 256
@@ -371,7 +489,7 @@ static inline int maxfg_regmap_writeverify(const struct maxfg_regmap *map,
 	maxfg_regmap_writeverify(regmap, what, value, #what)
 /* dump FG model data */
 void dump_model(struct device *dev, u16 model_start, u16 *data, int count);
-int maxfg_get_fade_rate(struct device *dev, int bhi_fcn_count, int *fade_rate, enum gbms_property p);
+int maxfg_get_fade_rate(struct device *dev, int bhi_fcn_count, int *fade_rate);
 const struct maxfg_reg * maxfg_find_by_tag(struct maxfg_regmap *map, enum maxfg_reg_tags tag);
 int maxfg_reg_read(struct maxfg_regmap *map, enum maxfg_reg_tags tag, u16 *val);
 int maxfg_collect_history_data(void *buff, size_t size, bool is_por, u16 designcap, u16 RSense,
@@ -465,5 +583,30 @@ void maxfg_dynrel_log(struct logbuffer *mon, struct device *dev, u16 fstat,
 void maxfg_dynrel_log_rel(struct logbuffer *mon, struct device *dev, u16 fstat,
 			     const struct maxfg_dynrel_state *dr_state);
 
+int maxfg_aafv_scan_inputs(const char *inputs, const int input_sz,
+			   struct aafv_fg_config *cfg, const int cfg_max);
+int maxfg_aafv_apply(struct logbuffer *mon, struct device *dev, struct maxfg_regmap *regmap,
+		     int aafv, const struct aafv_fg_config *cfgs, const int cfg_max,
+		     int fus_clear, int fus_shift, bool *fus_set, int *aafv_cur_index);
+int maxfg_aafv_restore_fus(struct maxfg_regmap *regmap, int fus_clear, int fus_shift, u16 fus);
+int maxfg_aafv_init(struct device_node *node, const char * prop,
+		    struct aafv_fg_config *config, int *config_limits);
+ssize_t maxfg_aafv_config_store(struct device *dev, const int batt_id,
+				const char *buf, size_t count,
+				struct aafv_fg_config *aafv_cfgs, int *aafv_config_limits);
+ssize_t maxfg_aafv_config_show(struct aafv_fg_config *cfgs, const int config_limits,
+			       const int batt_id, char *buf);
+int maxfg_aacv_apply(struct logbuffer *mon, struct device *dev, struct maxfg_regmap *regmap,
+		     int offset, u16 aacv_vempty);
+int maxfg_reset_max_min(struct maxfg_regmap *regmap);
+
+int maxfg_init_bypass_charge_limit(struct maxfg_regmap *regmap, struct device_node *node,
+				   struct maxfg_bypss_charglimt *limit);
+int maxfg_update_bypass_charge_limit(struct logbuffer *lb, struct device *dev,
+				     struct maxfg_regmap *regmap,
+				     struct maxfg_bypss_charglimt *limit, int cycle);
+bool maxfg_need_force_fullcharge(struct logbuffer *lb, struct device *dev,
+				 struct maxfg_regmap *regmap, struct maxfg_bypss_charglimt *limit,
+				 int cycle);
 
 #endif  // MAXFG_COMMON_H_

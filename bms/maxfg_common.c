@@ -34,11 +34,13 @@ void dump_model(struct device *dev, u16 model_start, u16 *data, int count)
 	}
 }
 
-int maxfg_get_fade_rate(struct device *dev, int bhi_fcn_count, int *fade_rate, enum gbms_property p)
+int maxfg_get_fade_rate(struct device *dev, int bhi_fcn_count, int *fade_rate)
 {
 	struct maxfg_eeprom_history hist = { 0 };
-	int ret, ratio, i, fcn_sum = 0, fcr_sum = 0, hist_max_size;
+	int ret, i, hist_max_size;
+	int fcn_sum = 0, fcr_sum = 0, fcn_max = 0, fcn_min = 0, fcr_max = 0, fcr_min = 0;
 	u16 hist_idx;
+	s8 ratio_fcn, ratio_fcr;
 
 	ret = gbms_storage_read(GBMS_TAG_HCNT, &hist_idx, sizeof(hist_idx));
 	if (ret < 0) {
@@ -58,6 +60,9 @@ int maxfg_get_fade_rate(struct device *dev, int bhi_fcn_count, int *fade_rate, e
 	if (hist_idx < bhi_fcn_count)
 		return 0;
 
+	if (hist_idx > bhi_fcn_count + BHI_CAP_FILTER_VALUE_COUNT)
+		bhi_fcn_count += BHI_CAP_FILTER_VALUE_COUNT;
+
 	while (hist_idx >= hist_max_size && bhi_fcn_count > 1) {
 		hist_idx--;
 		bhi_fcn_count--;
@@ -75,20 +80,48 @@ int maxfg_get_fade_rate(struct device *dev, int bhi_fcn_count, int *fade_rate, e
 			     __func__, hist_idx, hist.fullcapnom, hist.fullcapnom,
 			     hist.fullcaprep, hist.fullcaprep, ret);
 
-		if (ret < 0 || ret != sizeof(hist))
+		if (ret != sizeof(hist))
 			return -EINVAL;
 
-		/* hist.fullcapnom = fullcapnom * 800 / designcap */
+		/* ignore the invalid history */
+		if (hist.tempco == 0xFFFF && hist.rcomp0 == 0xFFFF) {
+			bhi_fcn_count--;
+			continue;
+		}
+
 		fcn_sum += hist.fullcapnom;
 		fcr_sum += hist.fullcaprep;
+
+		if (fcn_min == 0 || hist.fullcapnom < fcn_min)
+			fcn_min = hist.fullcapnom;
+
+		if (fcn_max == 0 || hist.fullcapnom > fcn_max)
+			fcn_max = hist.fullcapnom;
+
+		if (fcr_max == 0 || hist.fullcaprep > fcr_max)
+			fcr_max = hist.fullcaprep;
+
+		if (fcr_min == 0 || hist.fullcaprep < fcr_min)
+			fcr_min = hist.fullcaprep;
 	}
 
-	/* convert from maxfg_eeprom_history to percent */
-	ratio = (p == GBMS_PROP_CAPACITY_FADE_RATE_FCR) ? fcr_sum / (bhi_fcn_count * 8)
-							: fcn_sum / (bhi_fcn_count * 8);
+	if (bhi_fcn_count == 0)
+		return -EINVAL;
 
-	/* allow negative value when capacity larger than design */
-	*fade_rate = 100 - ratio;
+	if (bhi_fcn_count > BHI_CAP_FILTER_VALUE_COUNT) {
+		/* filter max/min values */
+		fcn_sum = fcn_sum - fcn_min - fcn_max;
+		fcr_sum = fcr_sum - fcr_min - fcr_max;
+		bhi_fcn_count -= BHI_CAP_FILTER_VALUE_COUNT;
+	}
+
+	/* convert from maxfg_eeprom_history to percent, lsb 0.125% */
+	ratio_fcn = fcn_sum / (bhi_fcn_count * 8);
+	ratio_fcr = fcr_sum / (bhi_fcn_count * 8);
+
+	/* allow negative value when capacity larger than design, pack FCN and FCR fade rates */
+	*fade_rate = ((s8)(100 - ratio_fcn) & 0xFF) |
+		     ((s8)(100 - ratio_fcr) & 0xFF) << FADE_RATE_FCR_OFFSET;
 
 	return 0;
 }
@@ -168,6 +201,23 @@ static int maxfg_reg_write_verify(struct maxfg_regmap *map, enum maxfg_reg_tags 
 	return 0;
 }
 
+
+static int maxfg_reg_write(struct maxfg_regmap *map, enum maxfg_reg_tags tag, u16 val)
+{
+	const struct maxfg_reg *reg;
+	unsigned int tmp = val;
+	int rtn;
+
+	reg = maxfg_find_by_tag(map, tag);
+	if (!reg)
+		return -EINVAL;
+
+	rtn = regmap_write(map->regmap, reg->reg, tmp);
+	if (rtn)
+		pr_err("Failed to write 0x%x to 0x%x\n", tmp, reg->reg);
+
+	return rtn;
+}
 
 #define REG_HALF_HIGH(reg)     ((reg >> 8) & 0x00FF)
 #define REG_HALF_LOW(reg)      (reg & 0x00FF)
@@ -482,58 +532,19 @@ int maxfg_health_write_ai(u16 act_impedance, u16 act_timerh)
 	return 0;
 }
 
-/* for abnormal event log */
-static enum maxfg_reg_tags fg_event_regs[] = {
-	MAXFG_TAG_cycles,
-	MAXFG_TAG_vcel,
-	MAXFG_TAG_avgv,
-	MAXFG_TAG_curr,
-	MAXFG_TAG_avgc,
-	MAXFG_TAG_timerh,
-	MAXFG_TAG_temp,
-	MAXFG_TAG_repcap,
-	MAXFG_TAG_mixcap,
-	MAXFG_TAG_fcrep,
-	MAXFG_TAG_fcnom,
-	MAXFG_TAG_qresd,
-	MAXFG_TAG_avcap,
-	MAXFG_TAG_vfremcap,
-	MAXFG_TAG_repsoc,
-	MAXFG_TAG_vfsoc,
-	MAXFG_TAG_msoc,
-	MAXFG_TAG_vfocv,
-	MAXFG_TAG_dpacc,
-	MAXFG_TAG_dqacc,
-	MAXFG_TAG_qh,
-	MAXFG_TAG_qh0,
-	MAXFG_TAG_vfsoc0,
-	MAXFG_TAG_qrtable20,
-	MAXFG_TAG_qrtable30,
-	MAXFG_TAG_status,
-	MAXFG_TAG_fstat,
-};
-
-static enum maxfg_reg_tags fg_event_dbg_regs[] = {
-	MAXFG_TAG_rcomp0,
-	MAXFG_TAG_tempco,
-};
-
-
 int maxfg_reg_log_abnormal(struct maxfg_regmap *map, struct maxfg_regmap *map_debug,
 			   char *buf, int buf_len)
 {
 	u16 ret, i, addr, val, pos = 0;
-	size_t reg_cnt = sizeof(fg_event_regs) / sizeof(enum maxfg_reg_tags);
-	size_t dbg_reg_cnt = sizeof(fg_event_dbg_regs) / sizeof(enum maxfg_reg_tags);
 
-	for (i = 0; i < reg_cnt; i++) {
+	for (i = 0; i < FG_EVENT_REGS_COUNT; i++) {
 		ret = maxfg_reg_read_addr(map, fg_event_regs[i], &val, &addr);
 		if (ret < 0)
 			return ret;
 		pos += scnprintf(&buf[pos], buf_len - pos, " %04X", val);
 	}
 
-	for (i = 0; i < dbg_reg_cnt; i++) {
+	for (i = 0; i < FG_EVENT_DBG_REGS_COUNT; i++) {
 		ret = maxfg_reg_read_addr(map_debug, fg_event_dbg_regs[i], &val, &addr);
 		if (ret < 0)
 			return ret;
@@ -550,7 +561,7 @@ int maxfg_reg_log_data(struct maxfg_regmap *map, struct maxfg_regmap *map_debug,
 	u16 vfsoc_addr, avcap_addr, repcap_addr, fullcap_addr, fullcaprep_addr, fullcapnom_addr;
 	u16 qh0_addr, qh_addr, dqacc_addr, dpacc_addr, fstat_addr, qresidual_addr, rcomp0_addr;
 	u16 cycles_addr, learncfg_addr, tempco_addr, filtercfg_addr, mixcap_addr, vfremcap_addr;
-	u16 vcell_addr, ibat_addr;
+	u16 vcell_addr, ibat_addr, temp, temp_addr;
 	int ret, len;
 
 	ret = maxfg_reg_read_addr(map, MAXFG_TAG_vfsoc, &vfsoc, &vfsoc_addr);
@@ -637,17 +648,22 @@ int maxfg_reg_log_data(struct maxfg_regmap *map, struct maxfg_regmap *map_debug,
 	if (ret < 0)
 		return ret;
 
-	len = scnprintf(&buf[0], PAGE_SIZE, "%02X:%04X %02X:%04X %02X:%04X %02X:%04X"
+	ret = maxfg_reg_read_addr(map, MAXFG_TAG_temp, &temp, &temp_addr);
+	if (ret < 0)
+		return ret;
+
+	len = scnprintf(&buf[0], PAGE_SIZE,
+			"%02X:%04X %02X:%04X %02X:%04X %02X:%04X"
 			" %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X"
 			" %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X"
-			" %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X",
-			vfsoc_addr, vfsoc, avcap_addr, avcap, repcap_addr, repcap,
-			fullcap_addr, fullcap, fullcaprep_addr, fullcaprep,
-			fullcapnom_addr, fullcapnom, qh0_addr, qh0, qh_addr, qh, dqacc_addr, dqacc,
-			dpacc_addr, dpacc, qresidual_addr, qresidual, fstat_addr, fstat,
-			learncfg_addr, learncfg, tempco_addr, tempco, filtercfg_addr, filtercfg,
-			mixcap_addr, mixcap, vfremcap_addr, vfremcap, vcell_addr, vcell,
-			ibat_addr , ibat, rcomp0_addr, rcomp0, cycles_addr, cycles);
+			" %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X %02X:%04X",
+			vfsoc_addr, vfsoc, avcap_addr, avcap, repcap_addr, repcap, fullcap_addr,
+			fullcap, fullcaprep_addr, fullcaprep, fullcapnom_addr, fullcapnom, qh0_addr,
+			qh0, qh_addr, qh, dqacc_addr, dqacc, dpacc_addr, dpacc, qresidual_addr,
+			qresidual, fstat_addr, fstat, learncfg_addr, learncfg, tempco_addr, tempco,
+			filtercfg_addr, filtercfg, mixcap_addr, mixcap, vfremcap_addr, vfremcap,
+			vcell_addr, vcell, ibat_addr, ibat, rcomp0_addr, rcomp0, cycles_addr,
+			cycles, temp_addr, temp);
 
 	return len;
 }
@@ -1150,4 +1166,467 @@ void maxfg_dynrel_log(struct logbuffer *mon, struct device *dev, u16 fstat,
 {
 	maxfg_dynrel_log__(mon, dev, dr_state, fstat, dr_state->vfocv_last,
 			   dr_state->vfsoc_last, dr_state->temp_last);
+}
+
+int maxfg_aafv_scan_inputs(const char *inputs, const int input_sz,
+			   struct aafv_fg_config* cfg, const int cfg_max)
+{
+	int idx = 0, pos = 0, rb;
+
+	while (pos < input_sz) {
+		if (idx >= cfg_max)
+			return -ERANGE;
+
+		if (sscanf(&inputs[pos], "%u,%u,%u%n", &cfg[idx].voffset,
+			   &cfg[idx].fullsoc, &cfg[idx].fus, &rb) != 4)
+			return -EINVAL;
+		pos += rb;
+
+		if (inputs[pos] == ',')
+			pos++;
+
+		idx++;
+	}
+
+	/* empty inputs */
+	if (idx == 0)
+		idx = -EINVAL;
+
+	return idx;
+}
+
+static inline int maxfg_aafv_pick_config(const struct aafv_fg_config *cfgs, const int cfg_max,
+					 int aafv)
+{
+	const struct aafv_fg_config *cfg;
+	int idx;
+
+	/*
+	 * when google_battery set aafv through GBMS_PROPERTY,
+	 * it scales with GBMS_AAFV_VOLTAGE_OFFSET_SCALE.
+	 */
+	aafv /= GBMS_AAFV_VOLTAGE_OFFSET_SCALE;
+
+	for (idx = 0; idx < cfg_max; idx++) {
+		cfg = &cfgs[idx];
+		if (aafv < cfg->voffset) {
+			idx--;
+			break;
+		}
+	}
+
+	if (idx == cfg_max)
+		idx--;
+
+	if (idx < 0)
+		return -ERANGE;
+
+	return idx;
+}
+
+int maxfg_aafv_apply(struct logbuffer *mon, struct device *dev, struct maxfg_regmap *regmap,
+		     int aafv, const struct aafv_fg_config *cfgs, const int cfg_max,
+		     int fus_clear, int fus_shift, bool *fus_set, int *aafv_cur_index)
+{
+	const struct aafv_fg_config *cfg;
+	u16 fullsoc, fullsoc_reg, misccfg, ichgterm;
+	int ret, idx;
+
+	idx = maxfg_aafv_pick_config(cfgs, cfg_max, aafv);
+	if (idx < 0) {
+		pr_err("failed to find aafv_cfg (%d) for offset(%d)\n", idx, aafv);
+		return idx;
+	}
+
+	cfg = &cfgs[idx];
+	fullsoc = percentage_to_reg(cfg->fullsoc);
+
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_fullsocthr, &fullsoc_reg);
+	if (ret) {
+		pr_err("fail maxfg_aafv_apply on reading fullsocthr(%d)\n", ret);
+		return ret;
+	}
+
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_ichgterm, &ichgterm);
+	if (ret) {
+		pr_err("fail maxfg_aafv_apply on reading ichgterm(%d)\n", ret);
+		return ret;
+	}
+
+	if (fullsoc_reg == fullsoc && ichgterm == cfg->ichgterm) {
+		pr_info("the same aafv(%d) is already applied\n", aafv);
+		*aafv_cur_index = idx;
+		return 0;
+	}
+
+	ret = maxfg_reg_write_verify(regmap, MAXFG_TAG_fullsocthr, fullsoc);
+	if (ret) {
+		pr_err("fail maxfg_aafv_apply on writing fullsocthr(%d)\n", ret);
+		return ret;
+	}
+
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_misccfg, &misccfg);
+	if (ret) {
+		pr_err("fail maxfg_aafv_apply on reading misccfg(%d)\n", ret);
+		return ret;
+	}
+
+	misccfg = (fus_clear & misccfg) | (cfg->fus << fus_shift);
+
+	ret = maxfg_reg_write_verify(regmap, MAXFG_TAG_misccfg, misccfg);
+	if (ret) {
+		pr_err("fail maxfg_aafv_apply on writing misccfg(%d)\n", ret);
+		return ret;
+	}
+
+	ichgterm = cfg->ichgterm;
+	ret = maxfg_reg_write_verify(regmap, MAXFG_TAG_ichgterm, ichgterm);
+	if (ret) {
+		pr_err("fail maxfg_aafv_apply on writing ichgterm(%d)\n", ret);
+		return ret;
+	}
+
+	gbms_logbuffer_devlog(mon, dev, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			      "%s fullsoc:%#x, misccfg:%#x, ichgterm:%#x",
+			      __func__, fullsoc, misccfg, ichgterm);
+
+	*aafv_cur_index = idx;
+	*fus_set = true;
+
+	return ret;
+}
+
+int maxfg_aafv_restore_fus(struct maxfg_regmap *regmap, int fus_clear, int fus_shift, u16 fus)
+{
+	int ret;
+	u16 misccfg;
+
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_misccfg, &misccfg);
+	if (ret) {
+		pr_err("fail to read misccfg(%d)\n", ret);
+		return ret;
+	}
+
+	misccfg = (fus_clear & misccfg) | (fus << fus_shift);
+
+	ret = maxfg_reg_write_verify(regmap, MAXFG_TAG_misccfg, misccfg);
+	if (ret)
+		pr_err("fail to write misccfg(%d)\n", ret);
+
+	return ret;
+}
+
+/*
+ * TODO: b/394147776 - question 3
+ * if FUS value is only modified by host side, read MISCCFG and update
+ * aafv_modified_fus flag in caller of maxfg_aafv_init
+ */
+int maxfg_aafv_init(struct device_node *node, const char * prop,
+		    struct aafv_fg_config *config, int *config_limits)
+{
+	const int aafv_u32_sz = sizeof(struct aafv_fg_config) / sizeof(u32);
+	int cnt, ret;
+
+	if (!node)
+		return -EPROBE_DEFER;
+
+	cnt = of_property_count_elems_of_size(node, prop, sizeof(struct aafv_fg_config));
+	if (cnt <= 0)
+		goto maxfg_aafv_init_no_data;
+
+	if (cnt > GBMS_AAFV_DATA_MAX)
+		cnt = GBMS_AAFV_DATA_MAX;
+
+	ret = of_property_read_u32_array(node, prop, (u32 *)config, cnt * aafv_u32_sz);
+	if (ret)
+		return ret;
+
+	*config_limits = cnt;
+
+maxfg_aafv_init_no_data:
+	return 0;
+}
+
+/*
+ * expected input string ormat: (can be multiline)
+ * - batt_id, c0, v0, s0, f0, c1, v1, s1, f1
+ *    cX: cycle count
+ *    vX: voltage offset
+ *    sX: fullsoc thr
+ *    fX: fus
+ */
+ssize_t maxfg_aafv_config_store(struct device *dev, const int batt_id,
+				const char *buf, size_t count,
+				struct aafv_fg_config *aafv_cfgs, int *aafv_config_limits)
+{
+	struct aafv_fg_config cfg[GBMS_AAFV_DATA_MAX] = { {0} };
+	int pos_buf = 0, ret = count;
+	bool valid = false;
+	char *inputs = kmalloc(count, GFP_KERNEL);
+	int id, cur, input_len, config_cnt;
+
+
+	while (pos_buf < count) {
+		if (sscanf(&buf[pos_buf], "%s", inputs) != 1) {
+			dev_err(dev, "invalid input format\n");
+			ret = -EINVAL;
+			goto maxfg_aafv_config_cleanup;
+		}
+
+		if (sscanf(inputs, "%d,%n", &id, &cur) != 1) {
+			dev_err(dev, "aavf config must start with batt_id\n");
+			ret = -EINVAL;
+			goto maxfg_aafv_config_cleanup;
+		}
+
+		/* buf[input_len] will be \n or \0 */
+		input_len = strlen(inputs);
+		pos_buf += input_len + 1;
+
+		if (batt_id != id)
+			continue;
+
+		config_cnt = maxfg_aafv_scan_inputs(&inputs[cur], input_len - cur, cfg,
+						    GBMS_AAFV_DATA_MAX);
+		if (config_cnt < 0) {
+			dev_err(dev,
+				"aavf malformed input (%d)\n", config_cnt);
+			ret = config_cnt;
+			goto maxfg_aafv_config_cleanup;
+		}
+
+		valid = true;
+	}
+
+	if (valid) {
+		memcpy(aafv_cfgs, &cfg, sizeof(struct aafv_fg_config) * config_cnt);
+		*aafv_config_limits = (u32)config_cnt;
+		dev_info(dev, "aafv updated with %d entries\n", config_cnt);
+	}
+
+maxfg_aafv_config_cleanup:
+	kfree(inputs);
+
+	return ret;
+}
+
+ssize_t maxfg_aafv_config_show(struct aafv_fg_config *cfgs, const int config_limits,
+			       const int batt_id, char *buf)
+{
+	ssize_t count = 0;
+	struct aafv_fg_config *cfg;
+	int i;
+
+	if (config_limits == 0)
+		return count;
+
+	count += sysfs_emit_at(buf, count, "%d", batt_id);
+
+	for (i = 0; i < config_limits ; i++) {
+		cfg = &cfgs[i];
+		count += sysfs_emit_at(buf, count, ",<%u>:<%u>:<%u>",
+				       cfg->voffset, cfg->fullsoc, cfg->fus);
+	}
+
+	count += sysfs_emit_at(buf, count, "\n");
+
+	return count;
+}
+
+#define MAX_FG_VEMPTY_VR_RESOLUTION 40
+
+static int calculate_vr_threshold(int base_value)
+{
+	int resolution = MAX_FG_VEMPTY_VR_RESOLUTION;
+	int threshold = base_value;
+
+	/*
+	 * Note that VR has to be set larger than VE+EmptyVoltHold level
+	 * to avoid application issue.
+	 */
+	return ((threshold / resolution) + 1) * resolution;
+}
+
+int maxfg_aacv_apply(struct logbuffer *mon, struct device *dev, struct maxfg_regmap *regmap,
+		     int offset, u16 aacv_vempty)
+{
+	int ve = reg_to_vempty(aacv_vempty);
+	int vr = reg_to_vrecovery(aacv_vempty);
+	int empty_volt_hold, base_vr, vr_threshold, ret;
+	u16 data;
+
+	/* read EmptyVoltHold from MAX77779_FG_SOCHold */
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_sochold, &data);
+	if (ret) {
+		pr_err("%s: fail on reading sochold(%d)\n", __func__, ret);
+		return ret;
+	}
+
+	empty_volt_hold = reg_to_empty_volt_hold(data);
+
+	/*
+	 * Note that VR has to be set larger than VE+EmptyVoltHold level
+	 * to avoid application issue.
+	 */
+	base_vr = ve + offset + empty_volt_hold;
+	vr_threshold = calculate_vr_threshold(base_vr);
+	if (vr < vr_threshold)
+		vr = vr_threshold;
+
+	/* update v_empty */
+	data = vempty_to_reg(ve + offset);
+	data |= vrecovery_to_reg(vr);
+	ret = maxfg_reg_write_verify(regmap, MAXFG_TAG_vempty, data);
+	if (ret) {
+		pr_err("%s: fail on writing vempty(%d)\n", __func__, ret);
+		return ret;
+	}
+
+	gbms_logbuffer_devlog(mon, dev, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			      "%s VEmpty: VE=%dmV VR=%dmV, offset=%d, hold=%dmV, reg:%#x",
+			      __func__, reg_to_vempty(data), reg_to_vrecovery(data),
+			      offset, empty_volt_hold, data);
+
+	return ret;
+}
+
+int maxfg_reset_max_min(struct maxfg_regmap *regmap)
+{
+	int ret = 0;
+
+	/* FG_MaxMinTemp */
+	ret = maxfg_reg_write(regmap, MAXFG_TAG_mmdt, 0x807F);
+	if (ret)
+		return ret;
+
+	/* FG_MaxMinCurr */
+	ret = maxfg_reg_write(regmap, MAXFG_TAG_mmdc, 0x807F);
+	if (ret)
+		return ret;
+
+	/* FG_MaxMinVolt */
+	ret = maxfg_reg_write(regmap, MAXFG_TAG_mmdv, 0x00FF);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static int maxfg_update_fcn_fcr_delta(struct maxfg_regmap *regmap,
+				      struct maxfg_bypss_charglimt *limit)
+{
+	int ret, fullcapnom, fullcaprep;
+
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_fcnom, (u16 *)&fullcapnom);
+	if (ret < 0) {
+		pr_err("failed to read MAXFG_TAG_fcnom (%d)\n", ret);
+		return ret;
+	}
+
+	ret = maxfg_reg_read(regmap, MAXFG_TAG_fcrep, (u16 *)&fullcaprep);
+	if (ret < 0) {
+		pr_err("failed to read MAXFG_TAG_fcrep (%d)\n", ret);
+		return ret;
+	}
+
+	/* Return the 10x scaled percentage */
+	limit->fcn_fcr_delta  = (abs(fullcapnom - fullcaprep) * 1000 ) / fullcapnom;
+
+	return 0;
+}
+
+int maxfg_init_bypass_charge_limit(struct maxfg_regmap *regmap, struct device_node *node,
+				   struct maxfg_bypss_charglimt *limit)
+{
+	int ret;
+
+	ret = gbms_storage_read(GBMS_TAG_FCRU, &limit->last_fullcharge, GBMS_FCRU_LEN);
+	if (ret < 0) {
+		pr_err("failed to read GBMS_TAG_FCRU (%d)\n", ret);
+		limit->last_fullcharge = 0;
+	}
+
+	/* if bypass_chargelimit_cycles has default value of eeprom */
+	if (limit->last_fullcharge == 0xFFFF)
+		limit->last_fullcharge = 0;
+
+	maxfg_update_fcn_fcr_delta(regmap, limit);
+	if (ret < 0)
+		limit->fcn_fcr_delta = 0;
+
+	/* configure force full charge mode */
+	ret = of_property_read_s32(node, "maxim,cycle-delta-threshold",
+				   &limit->threshold_cycle_delta);
+	if (ret != 0)
+		limit->threshold_cycle_delta = DEFAULT_FORCE_FCR_UPDATE_CYCLE;
+
+	ret = of_property_read_s32(node, "maxim,fcn-fcr-delta-threshold",
+				   &limit->threshold_fcn_delta);
+	if (ret < 0)
+		limit->threshold_fcn_delta = DEFAULT_FCN_FCR_DELTA_THESHOLD;
+
+	limit->mode = MAXFG_BYPASS_MODE_CYCLE_DELTA;
+
+	return 0;
+}
+
+int maxfg_update_bypass_charge_limit(struct logbuffer *lb, struct device *dev,
+				     struct maxfg_regmap *regmap,
+				     struct maxfg_bypss_charglimt *limit, int cycle)
+{
+	int ret;
+
+	ret = maxfg_update_fcn_fcr_delta(regmap, limit);
+	if (ret < 0)
+		limit->fcn_fcr_delta = 0;
+
+	ret = gbms_storage_write(GBMS_TAG_FCRU, &cycle, GBMS_FCRU_LEN);
+	if (ret < 0)
+		pr_err("failed to store FCRU (%d)\n", ret);
+
+	if (cycle == 0xFFFF)
+		limit->last_fullcharge = 0;
+	else
+		limit->last_fullcharge = cycle;
+
+	gbms_logbuffer_devlog(lb, dev, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			      "store %d to FCRU (%d)", cycle, ret == GBMS_FCRU_LEN ? 0 : ret);
+
+	return ret;
+}
+
+bool maxfg_need_force_fullcharge(struct logbuffer *lb, struct device *dev,
+				 struct maxfg_regmap *regmap, struct maxfg_bypss_charglimt *limit,
+				 int cycle)
+{
+	bool force;
+
+	switch (limit->mode) {
+	case MAXFG_BYPASS_MODE_CYCLE_DELTA:
+		/*
+		 * if no last full charge record or it's beyond current cycle count,
+		 * use current cycle count as base
+		 */
+		if (limit->last_fullcharge == 0 || (limit->last_fullcharge > cycle && cycle > 0))
+			maxfg_update_bypass_charge_limit(lb, dev, regmap, limit, cycle);
+
+		force = cycle - limit->last_fullcharge >= limit->threshold_cycle_delta;
+		if (force)
+			gbms_logbuffer_devlog(lb, dev, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+					      "force full charge, cycle=%d, last_full=%d, thr=%d",
+					      cycle, limit->last_fullcharge,
+					      limit->threshold_cycle_delta);
+		return force;
+	case MAXFG_BYPASS_MODE_FCN_DELTA:
+		maxfg_update_fcn_fcr_delta(regmap, limit);
+		force = limit->fcn_fcr_delta > limit->threshold_fcn_delta;
+		if (force)
+			gbms_logbuffer_devlog(lb, dev, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+					      "force full charge, fcn_fcr_delta=%d, thr=%d",
+					      limit->fcn_fcr_delta,
+					      limit->threshold_cycle_delta);
+		return force;
+	default:
+		return true;
+	}
 }

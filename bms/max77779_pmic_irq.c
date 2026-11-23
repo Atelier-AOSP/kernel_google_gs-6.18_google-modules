@@ -97,11 +97,11 @@ static int max77779_pmic_set_irq_type(struct irq_data *d, unsigned int type)
 	struct max77779_pmic_irq_info *info = irq_data_get_irq_chip_data(d);
 
 	switch (type) {
-	case IRQ_TYPE_NONE:
-	case IRQ_TYPE_EDGE_RISING:
-	case IRQ_TYPE_EDGE_FALLING:
-	case IRQ_TYPE_LEVEL_HIGH:
-	case IRQ_TYPE_LEVEL_LOW:
+	case IRQF_TRIGGER_NONE:
+	case IRQF_TRIGGER_RISING:
+	case IRQF_TRIGGER_FALLING:
+	case IRQF_TRIGGER_HIGH:
+	case IRQF_TRIGGER_LOW:
 		info->trig_type &= (0xf << (d->hwirq * 4));
 		info->trig_type |= (type << (d->hwirq * 4));
 		break;
@@ -277,9 +277,10 @@ static int max77779_pmic_irq_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void max77779_pmic_irq_remove(struct platform_device *pdev)
+static int max77779_pmic_irq_remove(struct platform_device *pdev)
 {
 	device_init_wakeup(&pdev->dev, false);
+	return 0;
 }
 
 static const struct platform_device_id max77779_pmic_irq_id[] = {

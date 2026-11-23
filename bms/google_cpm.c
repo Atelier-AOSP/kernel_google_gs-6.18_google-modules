@@ -78,6 +78,8 @@
 /* TODO: move to configuration */
 #define DC_VBATT_HEADROOM_MV	500000
 
+#define GCPM_VOTER		"GCPM"
+
 static const int GCPM_FCC_RETRIES = 200;
 static const int GCPM_FCC_RETRY_INTERVAL = 1000;
 
@@ -1372,7 +1374,7 @@ static bool gcpm_taper_step(const struct gcpm_drv *gcpm,
 /* needs mutex_lock(&gcpm->chg_psy_lock); */
 static int gcpm_chg_select_logic(struct gcpm_drv *gcpm)
 {
-	int index, schedule_pps_interval = -1;
+	int index, schedule_pps_interval = -1, ret;
 	bool dc_done = false, dc_ena;
 
 	dev_dbg(gcpm->device, "%s: init_ok=%d dc_state=%d dc_index=%d\n", __func__,
@@ -1413,6 +1415,10 @@ static int gcpm_chg_select_logic(struct gcpm_drv *gcpm)
 		else
 			pr_debug("%s: taper_step=%d done=%d\n", __func__,
 				 gcpm->taper_step, dc_done);
+		pr_info("%s: disable DC due to taper", __func__);
+		ret = gvotable_cast_int_vote(gcpm->dc_chg_avail_votable, GCPM_VOTER, 0, 1);
+		if (ret)
+			pr_info("%s: fail to disable DC, ret=%d\n", __func__, ret);
 	} else if (gcpm->taper_step_used && gcpm->taper_step != 0) {
 		const int vbatt_high = gcpm->dc_limit_vbatt_high;
 
@@ -2304,6 +2310,7 @@ static int gcpm_gbms_psy_set_property(struct power_supply *psy,
 			gcpm_taper_ctl(gcpm, 0);
 			gcpm->taper_step_used = false;
 
+			gvotable_cast_int_vote(gcpm->dc_chg_avail_votable, GCPM_VOTER, 0, 0);
 			/*
 			 * no-op if dc was NOT running, set online the charger
 			 * but do not start it otherwise.
@@ -3215,7 +3222,6 @@ static int mdis_tdev_register(const char *of_name, const char *tcd_name,
 	struct device_node *cooling_node = NULL;
 	int ret;
 
-	/* FIXME: this leaks cooling_node */
 	cooling_node = of_find_node_by_name(NULL, of_name);
 	if (!cooling_node) {
 		pr_err("No %s OF node for cooling device\n", of_name);
@@ -3691,10 +3697,10 @@ static irqreturn_t google_cpm_cop_warn_irq_handler(int irq, void *ptr)
 	if (gcpm_resume_check(gcpm))
 		return IRQ_NONE;
 
-	dev_warn(gcpm->device, "COP Warn triggered cc_max:%u\n", gcpm->cc_max);
+	dev_warn_ratelimited(gcpm->device, "COP Warn triggered cc_max:%u\n", gcpm->cc_max);
 	/* Schedule work on the first instance of COP Warn */
 	if (gcpm->cop_warn_count == 0) {
-		dev_dbg(gcpm->device, "%s: scheduling cop_warn_work\n", __func__);
+		dev_dbg_ratelimited(gcpm->device, "%s: scheduling cop_warn_work\n", __func__);
 		schedule_delayed_work(&gcpm->cop_warn_work,
 				      msecs_to_jiffies(COP_WARN_BACKOFF_MS));
 	}
@@ -3721,7 +3727,7 @@ static void gcpm_init_work(struct work_struct *work)
 	if (gcpm->tcpm_phandle && !gcpm->tcpm_psy) {
 		struct power_supply *tcpm_psy;
 
-		tcpm_psy = pps_get_tcpm_psy(dev_fwnode(gcpm->device),
+		tcpm_psy = pps_get_tcpm_psy(gcpm->device->of_node,
 					    GCPM_TCPM_PSY_MAX);
 		if (!IS_ERR_OR_NULL(tcpm_psy)) {
 			const char *name = tcpm_psy->desc->name;
@@ -4387,6 +4393,11 @@ static int gcpm_pps_psy_is_writeable(struct power_supply *psy,
 	return 0;
 }
 
+static enum power_supply_usb_type gcpm_pps_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_UNKNOWN,
+	POWER_SUPPLY_USB_TYPE_PD_PPS
+};
+
 static const struct power_supply_desc gcpm_pps_psy_desc = {
 	.name		= "gcpm_pps",
 	.type		= POWER_SUPPLY_TYPE_UNKNOWN,
@@ -4395,8 +4406,10 @@ static const struct power_supply_desc gcpm_pps_psy_desc = {
 	.properties	= gcpm_pps_psy_properties,
 	.property_is_writeable = gcpm_pps_psy_is_writeable,
 	.num_properties	= ARRAY_SIZE(gcpm_pps_psy_properties),
-	.usb_types	= BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
-			  BIT(POWER_SUPPLY_USB_TYPE_PD_PPS),
+
+	/* POWER_SUPPLY_PROP_USB_TYPE requires an array of these */
+	.usb_types	= gcpm_pps_usb_types,
+	.num_usb_types	= ARRAY_SIZE(gcpm_pps_usb_types),
 };
 
 /* ------------------------------------------------------------------------- */
@@ -4675,7 +4688,7 @@ static int google_cpm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, gcpm);
 
 	psy_cfg.drv_data = gcpm;
-	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	psy_cfg.of_node = pdev->dev.of_node;
 	gcpm->psy = devm_power_supply_register(gcpm->device,
 					       &gcpm_psy_desc.psy_dsc,
 					       &psy_cfg);
@@ -4697,7 +4710,7 @@ static int google_cpm_probe(struct platform_device *pdev)
 
 	/* gcpm_pps_psy_cfg.of_node is used to find out the snk_pdos */
 	gcpm_pps_psy_cfg.drv_data = gcpm;
-	gcpm_pps_psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	gcpm_pps_psy_cfg.of_node = pdev->dev.of_node;
 	gcpm->pps_psy = devm_power_supply_register(gcpm->device,
 						   &gcpm_pps_psy_desc,
 						   &gcpm_pps_psy_cfg);
@@ -4745,13 +4758,13 @@ static int google_cpm_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void google_cpm_remove(struct platform_device *pdev)
+static int google_cpm_remove(struct platform_device *pdev)
 {
 	struct gcpm_drv *gcpm = platform_get_drvdata(pdev);
 	int i;
 
 	if (!gcpm)
-		return;
+		return 0;
 
 	power_supply_unreg_notifier(&gcpm->chg_nb);
 
@@ -4774,6 +4787,8 @@ static void google_cpm_remove(struct platform_device *pdev)
 		power_supply_put(gcpm->wlc_dc_psy);
 	if (gcpm->log)
 		logbuffer_unregister(gcpm->log);
+
+	return 0;
 }
 
 static void google_cpm_shutdown(struct platform_device *pdev)

@@ -7,12 +7,12 @@
  */
 
 
-#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/version.h>
 #include <linux/delay.h>
 #include <linux/dev_printk.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 
 #include "pca9468_regs.h"
@@ -27,40 +27,38 @@ int debug_no_logbuffer = 0;
 
 static void p9468_chg_stats_set_apdo(struct p9468_chg_stats *chg_data, u32 apdo);
 
-static struct fwnode_handle *pca9468_find_config(struct fwnode_handle *fwnode)
+static struct device_node *pca9468_find_config(struct device_node * node)
 {
-	struct fwnode_handle *temp;
+	struct device_node *temp;
 
-	if (!fwnode)
-		return fwnode;
-
-	temp = fwnode_find_reference(fwnode, "pca9468,google_cpm", 0);
+	if (!node)
+		return node;
+	temp = of_parse_phandle(node, "pca9468,google_cpm", 0);
 	if (temp)
-		return temp;
-
-	return fwnode_handle_get(fwnode);
+		node = temp;
+	return node;
 }
 
 int pca9468_probe_pps(struct pca9468_charger *pca9468_chg)
 {
 	const char *tmp_name = NULL;
 	bool pps_available = false;
-	struct fwnode_handle *fwnode __free(fwnode_handle);
+	struct device_node *node;
 	int ret;
 
-	fwnode = pca9468_find_config(dev_fwnode(pca9468_chg->dev));
-	if (!fwnode)
+	node = pca9468_find_config(pca9468_chg->dev->of_node);
+	if (!node)
 		return -ENODEV;
 
-	ret = fwnode_property_read_u32(fwnode, "google,tcpm-power-supply",
-				       &pca9468_chg->tcpm_phandle);
+	ret = of_property_read_u32(node, "google,tcpm-power-supply",
+				   &pca9468_chg->tcpm_phandle);
 	if (ret < 0)
 		pr_warn("pca9468: pca,tcpm-power-supply not defined\n");
 	else
 		pps_available |= true;
 
-	ret = fwnode_property_read_string(fwnode, "google,wlc_dc-power-supply",
-					  &tmp_name);
+	ret = of_property_read_string(node, "google,wlc_dc-power-supply",
+				      &tmp_name);
 	if (ret < 0)
 		pr_warn("pca9468: google,wlc_dc-power-supply not defined\n");
 	if (ret == 0) {
@@ -123,12 +121,12 @@ int pca9468_usbpd_setup(struct pca9468_charger *pca9468)
 
 		pca9468->pd = tcpm_psy;
 	} else if (pca9468->tcpm_phandle) {
-		struct fwnode_handle *fwnode __free(fwnode_handle);
+		struct device_node *node;
 
-		fwnode = pca9468_find_config(dev_fwnode(pca9468->dev));
-		if (!fwnode)
+		node = pca9468_find_config(pca9468->dev->of_node);
+		if (!node)
 			return -ENODEV;
-		tcpm_psy = pps_get_tcpm_psy(fwnode, 2);
+		tcpm_psy = pps_get_tcpm_psy(node, 2);
 		if (IS_ERR(tcpm_psy))
 			return PTR_ERR(tcpm_psy);
 		if (!tcpm_psy) {

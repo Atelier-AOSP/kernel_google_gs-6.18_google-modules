@@ -137,7 +137,7 @@ static int max77779_pmic_sgpio_get(struct gpio_chip *gc, unsigned int offset)
 	return val;
 }
 
-static int max77779_pmic_sgpio_set(struct gpio_chip *gc,
+static void max77779_pmic_sgpio_set(struct gpio_chip *gc,
 		unsigned int offset, int value)
 {
 	struct max77779_pmic_sgpio_info *info = gpiochip_get_data(gc);
@@ -147,10 +147,10 @@ static int max77779_pmic_sgpio_set(struct gpio_chip *gc,
 	uint8_t val;
 
 	if (offset >= gc->ngpio)
-		return -EINVAL;
+		return;
 
 	val = !!value << MAX77779_PMIC_GPIO_SGPIO_CNFG0_DATA_SHIFT;
-	return max77779_external_pmic_reg_update(core, reg, mask, val);
+	max77779_external_pmic_reg_update(core, reg, mask, val);
 }
 
 static void max77779_pmic_sgpio_set_irq_valid_mask(struct gpio_chip *gc,
@@ -200,12 +200,12 @@ static int max77779_pmic_sgpio_set_irq_type(struct irq_data *d,
 	struct max77779_pmic_sgpio_info *info = gpiochip_get_data(gc);
 
 	switch (type) {
-	case IRQ_TYPE_NONE:
-	case IRQ_TYPE_EDGE_RISING:
-	case IRQ_TYPE_EDGE_FALLING:
-	case IRQ_TYPE_EDGE_BOTH:
-	case IRQ_TYPE_LEVEL_HIGH:
-	case IRQ_TYPE_LEVEL_LOW:
+	case IRQF_TRIGGER_NONE:
+	case IRQF_TRIGGER_RISING:
+	case IRQF_TRIGGER_FALLING:
+	case (IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING):
+	case IRQF_TRIGGER_HIGH:
+	case IRQF_TRIGGER_LOW:
 		info->trig_type[d->hwirq] = type;
 		break;
 	default:
@@ -235,20 +235,20 @@ static void max77779_pmic_sgpio_bus_lock(struct irq_data *d)
 	mutex_lock(&info->lock);
 }
 
-static int max77779_pmic_sgpio_irqt2cnfg(unsigned int irqt)
+static int max77779_pmic_sgpio_irqf2cnfg(unsigned int irqf)
 {
-	switch (irqt) {
-	case IRQ_TYPE_NONE:
+	switch (irqf) {
+	case IRQF_TRIGGER_NONE:
 		return MAX77779_SGPIO_CNFG_IRQ_DISABLE;
-	case IRQ_TYPE_EDGE_RISING:
+	case IRQF_TRIGGER_RISING:
 		return MAX77779_SGPIO_CNFG_IRQ_RISING;
-	case IRQ_TYPE_EDGE_FALLING:
+	case IRQF_TRIGGER_FALLING:
 		return MAX77779_SGPIO_CNFG_IRQ_FALLING;
-	case IRQ_TYPE_EDGE_BOTH:
+	case (IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING):
 		return MAX77779_SGPIO_CNFG_IRQ_BOTH;
-	case IRQ_TYPE_LEVEL_HIGH:
+	case IRQF_TRIGGER_HIGH:
 		return MAX77779_SGPIO_CNFG_IRQ_RISING;
-	case IRQ_TYPE_LEVEL_LOW:
+	case IRQF_TRIGGER_LOW:
 		return MAX77779_SGPIO_CNFG_IRQ_FALLING;
 	default:
 		return MAX77779_SGPIO_CNFG_IRQ_DISABLE;
@@ -284,7 +284,7 @@ static void max77779_pmic_sgpio_bus_sync_unlock(struct irq_data *d)
 		if (masked)
 			cnfg_val = MAX77779_SGPIO_CNFG_IRQ_DISABLE;
 		else
-			cnfg_val = max77779_pmic_sgpio_irqt2cnfg(info->trig_type[id]);
+			cnfg_val = max77779_pmic_sgpio_irqf2cnfg(info->trig_type[id]);
 		cnfg_val <<= MAX77779_PMIC_GPIO_SGPIO_CNFG0_IRQ_SEL_SHIFT;
 
 		reg = MAX77779_PMIC_GPIO_SGPIO_CNFG0 + id;
@@ -392,7 +392,6 @@ static struct irq_chip max77779_pmic_sgpio_irq_chip = {
 static int max77779_pmic_sgpio_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *dn;
 	struct max77779_pmic_sgpio_info *info;
 	struct gpio_chip *gpio_chip;
 	int irq_in;
@@ -431,13 +430,8 @@ static int max77779_pmic_sgpio_probe(struct platform_device *pdev)
 	gpio_chip->set_config = gpiochip_generic_config;
 	gpio_chip->base = -1;
 	gpio_chip->can_sleep = true;
+	gpio_chip->of_node = dev->of_node;
 	gpio_chip->ngpio = MAX77779_SGPIO_NUM_GPIOS;
-	/* balance of_node_put() in of_find_node_by_name() */
-	of_node_get(dev->of_node);
-	dn = of_find_node_by_name(dev->of_node, gpio_chip->label);
-	if (!dn)
-		dev_err(dev, "Failed to find %s DT node\n", gpio_chip->label);
-	gpio_chip->fwnode = of_node_to_fwnode(dn);
 
 	gpio_irq_chip_set_chip(&gpio_chip->irq, &max77779_pmic_sgpio_irq_chip);
 
@@ -471,9 +465,9 @@ static int max77779_pmic_sgpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void max77779_pmic_sgpio_remove(struct platform_device *pdev)
+static int max77779_pmic_sgpio_remove(struct platform_device *pdev)
 {
-	return;
+	return 0;
 }
 static const struct platform_device_id max77779_pmic_sgpio_id[] = {
 	{ "max77779-pmic-sgpio", 0},

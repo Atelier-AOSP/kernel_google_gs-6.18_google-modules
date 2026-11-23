@@ -15,7 +15,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/printk.h>
 #include <linux/module.h>
@@ -46,6 +45,8 @@
 #define REPORT_DEFAULT	0
 #define REPORT_BASE	1
 #define REPORT_SEC	2
+
+#define BATT_DC_DEBOUNCE_SEC	60
 
 static int debug_printk_prlog = LOGLEVEL_INFO;
 #define logbuffer_prlog(p, level, fmt, ...)	\
@@ -112,6 +113,10 @@ struct dual_fg_drv {
 	ktime_t last_update;
 
 	struct seq_soc_drop_wa seq_wa;
+
+	enum bpst_batt_status batt_state;
+	ktime_t base_dc_time;
+	ktime_t sec_dc_time;
 };
 
 static int gdbatt_resume_check(struct dual_fg_drv *dual_fg_drv) {
@@ -142,6 +147,65 @@ static enum power_supply_property gdbatt_fg_props[] = {
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_SERIAL_NUMBER,
 };
+
+/*
+ * The batt_state latches the highest disconnection level detected since boot,
+ * following this priority order:
+ *
+ * 1. BPST_BATT_DISCONNECT: Both batteries were disconnected at some point.
+ * 2. BPST_BATT_BASE_DC / BPST_BATT_SEC_DC: Base or Secondary battery was disconnected.
+ * 3. BPST_BATT_CONNECT: No disconnections detected yet.
+ */
+static void gdbatt_update_dc_state(struct dual_fg_drv *dual_fg_drv, int base_present,
+				   int sec_present)
+{
+	ktime_t now = get_boot_sec();
+	int pre_state = dual_fg_drv->batt_state;
+
+	if (base_present)
+		dual_fg_drv->base_dc_time = 0;
+	else if (!dual_fg_drv->base_dc_time)
+		dual_fg_drv->base_dc_time = now;
+
+	if (sec_present)
+		dual_fg_drv->sec_dc_time = 0;
+	else if (!dual_fg_drv->sec_dc_time)
+		dual_fg_drv->sec_dc_time = now;
+
+	/* all present or latched at highest disconnect level, no need to update */
+	if ((base_present && sec_present) || pre_state == BPST_BATT_DISCONNECT)
+		return;
+
+	/* update disconnect state after debounce time */
+	if (!base_present && (now - dual_fg_drv->base_dc_time >= BATT_DC_DEBOUNCE_SEC) &&
+	    dual_fg_drv->batt_state != BPST_BATT_BASE_DC)
+		dual_fg_drv->batt_state = dual_fg_drv->batt_state == BPST_BATT_CONNECT
+					  ? BPST_BATT_BASE_DC
+					  : BPST_BATT_DISCONNECT;
+
+	if (!sec_present && (now - dual_fg_drv->sec_dc_time >= BATT_DC_DEBOUNCE_SEC) &&
+	    dual_fg_drv->batt_state != BPST_BATT_SEC_DC)
+		dual_fg_drv->batt_state = dual_fg_drv->batt_state == BPST_BATT_CONNECT
+					  ? BPST_BATT_SEC_DC
+					  : BPST_BATT_DISCONNECT;
+
+	if (pre_state != dual_fg_drv->batt_state) {
+		logbuffer_prlog(dual_fg_drv, LOGLEVEL_INFO,
+				"%s: update batt_state %d->%d, base_dc=%lld, sec_dc=%lld, now=%lld",
+				__func__, pre_state, dual_fg_drv->batt_state,
+				dual_fg_drv->base_dc_time, dual_fg_drv->sec_dc_time, now);
+		power_supply_changed(dual_fg_drv->psy);
+	}
+}
+
+static int gdbatt_get_weighted_value_by_cap(int base, int sec, int base_dcap, int sec_dcap)
+{
+	/* return avg if either design cap is unavailable */
+	if (!base_dcap || !sec_dcap)
+		return (base + sec) / 2;
+
+	return (base * base_dcap + sec * sec_dcap) / (base_dcap + sec_dcap);
+}
 
 static int gdbatt_get_temp(struct power_supply *fg_psy, int *temp)
 {
@@ -741,6 +805,8 @@ static int gdbatt_get_property(struct power_supply *psy,
 		val->intval = fg_1.intval && fg_2.intval;
 		if (fg_1.intval != fg_2.intval)
 			pr_debug("PRESENT different: %d/%d", fg_1.intval, fg_2.intval);
+
+		gdbatt_update_dc_state(dual_fg_drv, fg_1.intval, fg_2.intval);
 		break;
 	case POWER_SUPPLY_PROP_SERIAL_NUMBER:
 		/* TODO: need hash SN */
@@ -786,7 +852,7 @@ static int gdbatt_gbms_get_property(struct power_supply *psy,
 {
 	struct dual_fg_drv *dual_fg_drv = (struct dual_fg_drv *)
 					power_supply_get_drvdata(psy);
-	int err = 0;
+	int err = 0, data;
 	union gbms_propval fg_1;
 	union gbms_propval fg_2;
 
@@ -796,6 +862,12 @@ static int gdbatt_gbms_get_property(struct power_supply *psy,
 
 	if (!dual_fg_drv->first_fg_psy && !dual_fg_drv->second_fg_psy)
 		return -EAGAIN;
+
+	if (psp == GBMS_PROP_DUAL_BATTERY_DC_STATE) {
+		/* batt_state update in POWER_SUPPLY_PROP_PRESENT */
+		val->prop.intval = dual_fg_drv->batt_state;
+		return 0;
+	}
 
 	if (!dual_fg_drv->first_fg_psy || !dual_fg_drv->second_fg_psy)
 		goto single_fg;
@@ -825,11 +897,25 @@ static int gdbatt_gbms_get_property(struct power_supply *psy,
 	case GBMS_PROP_RESISTANCE_AVG:
 	case GBMS_PROP_BATTERY_AGE:
 	case GBMS_PROP_CHARGE_FULL_ESTIMATE:
-	case GBMS_PROP_CAPACITY_FADE_RATE:
-	case GBMS_PROP_CAPACITY_FADE_RATE_FCR:
 	case GBMS_PROP_BATT_ID:
-	case GBMS_PROP_AAFV:
+	case GBMS_PROP_AAFV_OFFSET:
+	case GBMS_PROP_NEED_CHARGE_TO_FULL:
 		val->prop.intval = fg_1.prop.intval;
+		break;
+	case GBMS_PROP_AACV_OFFSET:
+		/* TODO: under porting */
+		break;
+	case GBMS_PROP_CAPACITY_FADE_RATE:
+		data = gdbatt_get_weighted_value_by_cap(get_fade_rate(fg_1.prop.intval),
+							fg_2.prop.intval,
+							dual_fg_drv->base_charge_full,
+							dual_fg_drv->sec_charge_full);
+		pr_debug("base_fr=%d, sec_fr=%d, base_dcap=%d, sec_dcap=%d, weighted_fr=%d\n",
+			 get_fade_rate(fg_1.prop.intval), fg_2.prop.intval,
+			 dual_fg_drv->base_charge_full, dual_fg_drv->sec_charge_full, data);
+
+		val->prop.intval = fg_1.prop.intval | fg_2.prop.intval << FADE_RATE_SEC_OFFSET |
+				   data << FADE_RATE_MIX_OFFSET;
 		break;
 	case GBMS_PROP_RECAL_FG:
 		/* TODO: under porting */
@@ -895,7 +981,7 @@ static int gdbatt_gbms_set_property(struct power_supply *psy,
 	case GBMS_PROP_RECAL_FG:
 		/* TODO: under porting */
 		break;
-	case GBMS_PROP_AAFV:
+	case GBMS_PROP_AAFV_OFFSET:
 		if (dual_fg_drv->first_fg_psy) {
 			ret = GPSY_SET_PROP(dual_fg_drv->first_fg_psy, psp, val->prop.intval);
 			if (ret < 0)
@@ -906,6 +992,17 @@ static int gdbatt_gbms_set_property(struct power_supply *psy,
 			if (ret < 0)
 				pr_err("Cannot set aafv to the second FG, ret=%d\n", ret);
 		}
+		break;
+	case GBMS_PROP_AACV_OFFSET:
+		/* TODO: under porting */
+		break;
+	case GBMS_PROP_NEED_CHARGE_TO_FULL:
+		if (!dual_fg_drv->first_fg_psy)
+			break;
+
+		ret = GPSY_SET_PROP(dual_fg_drv->first_fg_psy, psp, val->prop.intval);
+		if (ret < 0)
+			pr_err("Cannot set NEED_CHARGE_TO_FULL to the first FG, ret=%d\n", ret);
 		break;
 	default:
 		pr_debug("%s: route to gdbatt_set_property, psp:%d\n", __func__, psp);
@@ -925,7 +1022,8 @@ static int gdbatt_gbms_property_is_writeable(struct power_supply *psy,
 {
 	switch (psp) {
 	case GBMS_PROP_BATT_CE_CTRL:
-	case GBMS_PROP_AAFV:
+	case GBMS_PROP_AAFV_OFFSET:
+	case GBMS_PROP_NEED_CHARGE_TO_FULL:
 		return 1;
 	default:
 		break;
@@ -951,7 +1049,7 @@ static struct gbms_desc gdbatt_psy_desc = {
 /* ------------------------------------------------------------------------ */
 
 static int gdbatt_init_pack_chg_profile(struct gbms_chg_profile *pack_profile,
-					const struct device_node *node,
+					struct device_node *node,
 					const struct gbms_chg_profile *profile,
 					u32 capacity_ma)
 {
@@ -993,8 +1091,7 @@ static int gdbatt_init_pack_chg_profile(struct gbms_chg_profile *pack_profile,
 
 static int gdbatt_init_chg_profile(struct dual_fg_drv *dual_fg_drv)
 {
-	struct device_node *node __free(device_node)
-		= of_find_node_by_name(NULL, "google,battery");
+	struct device_node *node = of_find_node_by_name(NULL, "google,battery");
 	struct device_node *dual_fg_node = dual_fg_drv->device->of_node;
 	struct gbms_chg_profile *profile = &dual_fg_drv->chg_profile;
 	int ret = 0;
@@ -1077,13 +1174,14 @@ static void google_dual_batt_gauge_init_work(struct work_struct *work)
 			goto retry_init_work;
 		}
 
-		dual_fg_drv->first_fg_psy = first_fg_psy;
-
 		/* Don't use it if battery not present */
 		err = power_supply_get_property(first_fg_psy,
 						POWER_SUPPLY_PROP_PRESENT, &val);
 		if (err == -EAGAIN)
 			goto retry_init_work;
+
+		dual_fg_drv->first_fg_psy = first_fg_psy;
+
 		if (err == 0 && val.intval == 0) {
 			dev_info(dual_fg_drv->device, "First battery not PRESENT\n");
 			dual_fg_drv->first_fg_psy_name = NULL;
@@ -1099,19 +1197,33 @@ static void google_dual_batt_gauge_init_work(struct work_struct *work)
 			goto retry_init_work;
 		}
 
-		dual_fg_drv->second_fg_psy = second_fg_psy;
-
 		/* Don't use it if battery not present */
 		err = power_supply_get_property(second_fg_psy,
 						POWER_SUPPLY_PROP_PRESENT, &val);
 		if (err == -EAGAIN)
 			goto retry_init_work;
+
+		dual_fg_drv->second_fg_psy = second_fg_psy;
+
 		if (err == 0 && val.intval == 0) {
 			dev_info(dual_fg_drv->device, "Second battery not PRESENT\n");
 			dual_fg_drv->second_fg_psy_name = NULL;
 			dual_fg_drv->second_fg_psy = NULL;
 		}
 	}
+
+	/* init batt_state based on battery present */
+	if (!dual_fg_drv->first_fg_psy && !dual_fg_drv->second_fg_psy)
+		dual_fg_drv->batt_state = BPST_BATT_ALL_DC_ON_BOOT;
+	else if (!dual_fg_drv->first_fg_psy)
+		dual_fg_drv->batt_state = BPST_BATT_BASE_DC_ON_BOOT;
+	else if (!dual_fg_drv->second_fg_psy)
+		dual_fg_drv->batt_state = BPST_BATT_SEC_DC_ON_BOOT;
+	else
+		dual_fg_drv->batt_state = BPST_BATT_CONNECT;
+
+	logbuffer_prlog(dual_fg_drv, LOGLEVEL_INFO, "%s: init batt_state %d",
+			__func__, dual_fg_drv->batt_state);
 
 	err = update_charge_full(dual_fg_drv);
 	if (err == -EAGAIN)
@@ -1201,6 +1313,7 @@ static int google_dual_batt_init_sysfs(struct dual_fg_drv *dual_fg_drv)
 		debugfs_create_u32("seq_report_soc_type", 0644, de, &wa->report_soc_type);
 		debugfs_create_u32("seq_soc_limit", 0644, de, &wa->seq_fg_soc_limit);
 		debugfs_create_u32("seq_delta_limit", 0644, de, &wa->seq_fg_delta_limit);
+		debugfs_create_u32("batt_state", 0644, de, &dual_fg_drv->batt_state);
 	}
 
 	return 0;
@@ -1258,7 +1371,7 @@ static int google_dual_batt_gauge_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dual_fg_drv);
 
 	psy_cfg.drv_data = dual_fg_drv;
-	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	psy_cfg.of_node = pdev->dev.of_node;
 
 	if (of_property_read_bool(pdev->dev.of_node, "google,psy-type-unknown"))
 		gdbatt_psy_desc.psy_dsc.type = POWER_SUPPLY_TYPE_UNKNOWN;
@@ -1322,12 +1435,12 @@ static int google_dual_batt_gauge_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void google_dual_batt_gauge_remove(struct platform_device *pdev)
+static int google_dual_batt_gauge_remove(struct platform_device *pdev)
 {
 	struct dual_fg_drv *dual_fg_drv = platform_get_drvdata(pdev);
 
 	if (!dual_fg_drv)
-		return;
+		return 0;
 
 	power_supply_unreg_notifier(&dual_fg_drv->fg_nb);
 	gbms_free_chg_profile(&dual_fg_drv->chg_profile);
@@ -1337,6 +1450,7 @@ static void google_dual_batt_gauge_remove(struct platform_device *pdev)
 	if (dual_fg_drv->log)
 		logbuffer_unregister(dual_fg_drv->log);
 
+	return 0;
 }
 
 static void google_dual_batt_gauge_shutdown(struct platform_device *pdev)

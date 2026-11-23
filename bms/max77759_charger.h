@@ -7,7 +7,6 @@
 #ifndef MAX77759_CHARGER_H_
 #define MAX77759_CHARGER_H_
 
-#include <linux/gpio/driver.h>
 #include "max77759_usecase.h"
 #include "max777x9_bcl.h"
 
@@ -30,6 +29,7 @@ struct max77759_chgr_data {
 
 	/* wcin inlim tracking */
 	struct delayed_work wcin_inlim_work;
+	struct delayed_work wcin_charge_disable_work;
 	uint32_t wcin_inlim_period;
 	uint32_t wcin_inlim_flag;
 	uint32_t wcin_inlim_headroom;
@@ -49,6 +49,7 @@ struct max77759_chgr_data {
 	bool wlc_spoof;
 	bool thm2_sts;
 
+	int irq_gpio;
 	int irq_int;
 
 	uint32_t cc_max;
@@ -86,8 +87,11 @@ struct max77759_chgr_data {
 
 	struct gvotable_election *aicl_active_el;
 
+	struct gvotable_election *msc_last_votable;
 	int chg_term_voltage;
 	int chg_term_volt_debounce;
+
+	bool msc_pwr_voter_active;
 };
 
 #endif

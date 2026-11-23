@@ -8,7 +8,6 @@
 #define MAX77779_CHARGER_H_
 
 #include <linux/gpio.h>
-#include <linux/gpio/driver.h>
 
 #include "max77779_usecase.h"
 
@@ -50,6 +49,7 @@ struct max77779_chgr_data {
 
 	/* wcin inlim tracking */
 	struct delayed_work wcin_inlim_work;
+	struct delayed_work wcin_charge_disable_work;
 	uint32_t wcin_inlim_t;
 	uint32_t wcin_inlim_flag;
 	uint32_t wcin_inlim_headroom;
@@ -100,8 +100,11 @@ struct max77779_chgr_data {
 	/* debug interface, register to read or write */
 	u32 debug_reg_address;
 
+	struct gvotable_election *msc_last_votable;
 	int chg_term_voltage;
 	int chg_term_volt_debounce;
+
+	bool msc_pwr_voter_active;
 };
 int max77779_charger_init(struct max77779_chgr_data *data);
 void max77779_charger_remove(struct max77779_chgr_data *data);

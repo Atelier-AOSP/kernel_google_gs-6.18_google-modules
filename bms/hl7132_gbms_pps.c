@@ -7,12 +7,12 @@
  */
 
 
-#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/version.h>
 #include <linux/delay.h>
 #include <linux/dev_printk.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 
 #include "hl7132_regs.h"
@@ -27,32 +27,30 @@ int debug_no_logbuffer;
 
 static void hl7132_chg_stats_set_apdo(struct hl7132_chg_stats *chg_data, u32 apdo);
 
-static struct fwnode_handle *hl7132_find_config(struct fwnode_handle *fwnode)
+static struct device_node *hl7132_find_config(struct device_node *node)
 {
-	struct fwnode_handle *temp;
+	struct device_node *temp;
 
-	if (!fwnode)
-		return fwnode;
-
-	temp = fwnode_find_reference(fwnode, "hl7132,google_cpm", 0);
+	if (!node)
+		return node;
+	temp = of_parse_phandle(node, "hl7132,google_cpm", 0);
 	if (temp)
-	        return temp;
-
-	return fwnode_handle_get(fwnode);
+		node = temp;
+	return node;
 }
 
 int hl7132_probe_pps(struct hl7132_charger *hl7132_chg)
 {
 	bool pps_available = false;
-	struct fwnode_handle *fwnode __free(fwnode_handle);
+	struct device_node *node;
 	int ret;
 
-	fwnode = hl7132_find_config(dev_fwnode(hl7132_chg->dev));
-	if (!fwnode)
+	node = hl7132_find_config(hl7132_chg->dev->of_node);
+	if (!node)
 		return -ENODEV;
 
-	ret = fwnode_property_read_u32(fwnode, "google,tcpm-power-supply",
-				       &hl7132_chg->tcpm_phandle);
+	ret = of_property_read_u32(node, "google,tcpm-power-supply",
+				   &hl7132_chg->tcpm_phandle);
 	if (ret < 0)
 		dev_warn(hl7132_chg->dev,
 			"hl7132: google,tcpm-power-supply not defined\n");
@@ -110,13 +108,13 @@ int hl7132_usbpd_setup(struct hl7132_charger *hl7132)
 
 		hl7132->pd = tcpm_psy;
 	} else if (hl7132->tcpm_phandle) {
-		struct fwnode_handle *fwnode __free(fwnode_handle);
+		struct device_node *node;
 
-		fwnode = hl7132_find_config(dev_fwnode(hl7132->dev));
-		if (!fwnode)
+		node = hl7132_find_config(hl7132->dev->of_node);
+		if (!node)
 			return -ENODEV;
 
-		tcpm_psy = pps_get_tcpm_psy(fwnode, 2);
+		tcpm_psy = pps_get_tcpm_psy(node, 2);
 		if (IS_ERR(tcpm_psy))
 			return PTR_ERR(tcpm_psy);
 		if (!tcpm_psy) {
