@@ -16,6 +16,7 @@
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/rculist.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
@@ -155,7 +156,7 @@ static int lwis_open(struct inode *node, struct file *fp)
 	memset(&lwis_client->debug_info, 0, sizeof(lwis_client->debug_info));
 
 	spin_lock_irqsave(&lwis_dev->lock, flags);
-	list_add(&lwis_client->node, &lwis_dev->clients);
+	list_add_rcu(&lwis_client->node, &lwis_dev->clients);
 	spin_unlock_irqrestore(&lwis_dev->lock, flags);
 
 	/* Storing the client handle in fp private_data for easy access */
@@ -204,9 +205,15 @@ static void cleanup_client(struct lwis_client *lwis_client)
 static inline bool check_client_exists(const struct lwis_device *lwis_dev,
 				       const struct lwis_client *lwis_client)
 {
-	struct lwis_client *p, *n;
+	struct lwis_client *p;
 
-	list_for_each_entry_safe(p, n, &lwis_dev->clients, node) {
+	/*
+	 * This function is called with lwis_dev->lock held. Since we hold the
+	 * writer lock, the list cannot change under us, so it is safe to use
+	 * the standard list_for_each_entry() iterator even though the list is
+	 * RCU-protected.
+	 */
+	list_for_each_entry(p, &lwis_dev->clients, node) {
 		if (lwis_client == p)
 			return true;
 	}
@@ -221,16 +228,19 @@ static inline bool check_client_exists(const struct lwis_device *lwis_dev,
 static void release_client(struct lwis_client *lwis_client)
 {
 	struct lwis_device *lwis_dev = lwis_client->lwis_dev;
+	unsigned long flags;
 
 	cleanup_client(lwis_client);
 
 	/* Take this lwis_client off the list of active clients */
+	spin_lock_irqsave(&lwis_dev->lock, flags);
 	if (check_client_exists(lwis_dev, lwis_client)) {
-		list_del(&lwis_client->node);
+		list_del_rcu(&lwis_client->node);
 	} else {
 		dev_err(lwis_dev->dev,
 			"Trying to release a client tied to this device, but the entry was not found on the clients list.");
 	}
+	spin_unlock_irqrestore(&lwis_dev->lock, flags);
 
 	lwis_bus_manager_disconnect_client(lwis_client);
 
@@ -242,7 +252,7 @@ static void release_client(struct lwis_client *lwis_client)
 	if (lwis_client->lwis_dev->type == DEVICE_TYPE_TOP)
 		lwis_stop_top_device_worker(lwis_client);
 
-	kfree(lwis_client);
+	kfree_rcu(lwis_client, rcu);
 }
 
 /*
@@ -261,7 +271,7 @@ static int lwis_release(struct inode *node, struct file *fp)
 	/* Release the allocator and its cache */
 	lwis_allocator_release(lwis_dev);
 
-	mutex_lock(&lwis_dev->client_lock);
+	mutex_lock(&lwis_dev->interclient_lock);
 	release_client(lwis_client);
 	/* Release power if client closed without power down called */
 	if (is_client_enabled && lwis_dev->enabled > 0) {
@@ -293,9 +303,9 @@ static int lwis_release(struct inode *node, struct file *fp)
 		/* remove voted qos */
 		lwis_platform_remove_qos(lwis_dev);
 		/* Release device event states if no more client is using */
-		lwis_device_event_states_clear_locked(lwis_dev);
+		lwis_device_event_states_clear(lwis_dev);
 	}
-	mutex_unlock(&lwis_dev->client_lock);
+	mutex_unlock(&lwis_dev->interclient_lock);
 
 	/* Call device type specific close routines. */
 	if (lwis_dev->enabled == 0) {
@@ -1051,7 +1061,7 @@ static int power_up_by_default(struct lwis_device *lwis_dev)
 
 /*
  * Power up a LWIS device, should be called when lwis_dev->enabled is 0
- * lwis_dev->client_lock should be held before this function.
+ * lwis_dev->interclient_lock should be held before this function.
  */
 int lwis_dev_power_up_locked(struct lwis_device *lwis_dev)
 {
@@ -1238,7 +1248,7 @@ static int power_down_by_default(struct lwis_device *lwis_dev)
 
 /*
  * Power down a LWIS device, should be called when lwis_dev->enabled become 0
- * lwis_dev->client_lock should be held before this function.
+ * lwis_dev->interclient_lock should be held before this function.
  */
 int lwis_dev_power_down_locked(struct lwis_device *lwis_dev)
 {
@@ -1389,7 +1399,7 @@ static struct lwis_device *find_top_dev(void)
 
 static void event_heartbeat_timer(struct timer_list *t)
 {
-	struct lwis_device *lwis_dev = timer_container_of(lwis_dev, t, heartbeat_timer);
+	struct lwis_device *lwis_dev = from_timer(lwis_dev, t, heartbeat_timer);
 	int64_t event_id = LWIS_EVENT_ID_HEARTBEAT | (int64_t)lwis_dev->id
 							     << LWIS_EVENT_ID_EVENT_CODE_LEN;
 
@@ -1495,7 +1505,7 @@ int lwis_base_probe(struct lwis_device *lwis_dev)
 	lwis_dev->clock_family = CLOCK_FAMILY_INVALID;
 
 	/* Initialize client mutex */
-	mutex_init(&lwis_dev->client_lock);
+	mutex_init(&lwis_dev->interclient_lock);
 
 	/* Initialize an empty list of clients */
 	INIT_LIST_HEAD(&lwis_dev->clients);
@@ -1626,7 +1636,7 @@ void lwis_base_unprobe(struct lwis_device *unprobe_lwis_dev)
 			list_del(&lwis_dev->dev_list);
 
 			if (timer_pending(&lwis_dev->heartbeat_timer))
-				timer_delete(&lwis_dev->heartbeat_timer);
+				del_timer(&lwis_dev->heartbeat_timer);
 		}
 	}
 	mutex_unlock(&core.lock);
@@ -1663,7 +1673,7 @@ static int __init lwis_register_base_device(void)
 	core.device_major = MAJOR(core.lwis_devt);
 
 	/* Create a device class*/
-	core.dev_class = class_create(LWIS_CLASS_NAME);
+	core.dev_class = class_create(THIS_MODULE, LWIS_CLASS_NAME);
 	if (IS_ERR_OR_NULL(core.dev_class)) {
 		pr_err("Failed to create device class\n");
 		ret = PTR_ERR(core.dev_class);
@@ -1928,4 +1938,4 @@ module_exit(lwis_driver_exit);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Google-ACMA");
 MODULE_DESCRIPTION("LWIS Base Device Driver");
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);

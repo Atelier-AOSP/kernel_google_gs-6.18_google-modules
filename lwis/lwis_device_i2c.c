@@ -45,6 +45,7 @@ static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 
 static struct lwis_device_subclass_operations i2c_vops = {
 	.register_io = lwis_i2c_register_io,
+	.register_io_locked = lwis_i2c_register_io,
 	.register_io_barrier = NULL,
 	.device_enable = lwis_i2c_device_enable,
 	.device_disable = lwis_i2c_device_disable,
@@ -142,7 +143,7 @@ static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 	return lwis_i2c_io_entry_rw(i2c_dev, entry);
 }
 
-static int i2c_addr_matcher(struct device *dev, const void *data)
+static int i2c_addr_matcher(struct device *dev, void *data)
 {
 	struct i2c_client *client = i2c_verify_client(dev);
 	int address = *(int *)data;

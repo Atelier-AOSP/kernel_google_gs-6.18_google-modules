@@ -29,7 +29,7 @@ void lwis_ioreg_list_free(struct lwis_ioreg_device *ioreg_dev);
 /*
  *  lwis_ioreg_get: Setup the content of a lwis_ioreg entry.
  */
-int lwis_ioreg_get(struct lwis_ioreg_device *ioreg_dev, int index, const char *name);
+int lwis_ioreg_get(struct lwis_ioreg_device *ioreg_dev, int index, char *name);
 
 /*
  *  lwis_ioreg_put_by_idx: Deinitialize the content of a lwis_ioreg entry
@@ -48,6 +48,12 @@ int lwis_ioreg_put_by_name(struct lwis_ioreg_device *ioreg_dev, char *name);
  */
 int lwis_ioreg_io_entry_rw(struct lwis_ioreg_device *ioreg_dev, struct lwis_io_entry *entry,
 			   int access_size);
+
+/*
+ *  lwis_ioreg_io_entry_rw: Read/write registers via io_entry request without lock.
+ */
+int lwis_ioreg_io_entry_rw_locked(struct lwis_ioreg_device *ioreg_dev, struct lwis_io_entry *entry,
+				  int access_size);
 
 /*
  *  lwis_ioreg_read: Read single register.

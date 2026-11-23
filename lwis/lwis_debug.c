@@ -9,6 +9,8 @@
 #include <linux/fs.h>
 #include <linux/hashtable.h>
 #include <linux/list.h>
+#include <linux/rculist.h>
+#include <linux/rcupdate.h>
 #include <linux/string.h>
 
 #include "lwis_buffer.h"
@@ -264,11 +266,13 @@ static int generate_transaction_info(struct lwis_device *lwis_dev, char *buffer,
 
 	count = scnprintf(buffer, buffer_size, "=== LWIS TRANSACTION INFO: %s ===\n",
 			  lwis_dev->name);
-	list_for_each_entry(client, &lwis_dev->clients, node) {
+	rcu_read_lock();
+	list_for_each_entry_rcu(client, &lwis_dev->clients, node) {
 		count += scnprintf(buffer + count, buffer_size - count, "Client %d:\n", idx);
 		count += list_transactions(client, buffer + count, buffer_size - count);
 		++idx;
 	}
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -277,6 +281,7 @@ static int generate_buffer_info(struct lwis_device *lwis_dev, char *buffer, size
 {
 	struct lwis_client *client;
 	int idx = 0;
+	unsigned long flags;
 	int count;
 
 	if (lwis_dev == NULL) {
@@ -290,12 +295,16 @@ static int generate_buffer_info(struct lwis_device *lwis_dev, char *buffer, size
 	}
 
 	count = scnprintf(buffer, buffer_size, "=== LWIS BUFFER INFO: %s ===\n", lwis_dev->name);
-	list_for_each_entry(client, &lwis_dev->clients, node) {
+	rcu_read_lock();
+	list_for_each_entry_rcu(client, &lwis_dev->clients, node) {
+		spin_lock_irqsave(&lwis_dev->lock, flags);
 		count += scnprintf(buffer + count, buffer_size - count, "Client %d:\n", idx);
 		count += list_allocated_buffers(client, buffer + count, buffer_size - count);
 		count += list_enrolled_buffers(client, buffer + count, buffer_size - count);
+		spin_unlock_irqrestore(&lwis_dev->lock, flags);
 		++idx;
 	}
+	rcu_read_unlock();
 
 	return 0;
 }

@@ -17,6 +17,7 @@
 #include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
+#include <linux/rcupdate.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/workqueue.h>
@@ -104,6 +105,9 @@ struct lwis_device_subclass_operations {
 	/* Called by lwis_device when device register needs to be read/written */
 	int (*register_io)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
 			   int access_size);
+	/* Called by lwis_device when device register needs to be read/written without lock */
+	int (*register_io_locked)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
+				  int access_size);
 	/* Called by lwis_device when a read/write memory barrier needs to be inserted */
 	int (*register_io_barrier)(struct lwis_device *lwis_dev, bool use_read_barrier,
 				   bool use_write_barrier);
@@ -214,7 +218,7 @@ struct lwis_device {
 	/* Mark if the client called device suspend */
 	bool is_suspended;
 	/* Mutex used to synchronize access between clients */
-	struct mutex client_lock;
+	struct mutex interclient_lock;
 	/* Spinlock used to synchronize access to the device struct */
 	spinlock_t lock;
 	/* List of clients opened for this device */
@@ -297,6 +301,7 @@ struct lwis_device {
  *  application that calls open() on a /dev/lwis* device.
  */
 struct lwis_client {
+	struct rcu_head rcu;
 	struct mutex lock;
 	struct lwis_device *lwis_dev;
 	/* Hash table of events controlled by userspace in this client */
@@ -372,13 +377,13 @@ bool lwis_i2c_dev_is_in_use(struct lwis_device *lwis_dev);
 
 /*
  * Power up a LWIS device, should be called when lwis_dev->enabled is 0
- * lwis_dev->client_lock should be held before this function.
+ * lwis_dev->interclient_lock should be held before this function.
  */
 int lwis_dev_power_up_locked(struct lwis_device *lwis_dev);
 
 /*
  * Power down a LWIS device, should be called when lwis_dev->enabled become 0
- * lwis_dev->client_lock should be held before this function.
+ * lwis_dev->interclient_lock should be held before this function.
  */
 int lwis_dev_power_down_locked(struct lwis_device *lwis_dev);
 
